@@ -1,0 +1,324 @@
+{
+	"info": {
+		"_postman_id": "a1b2c3d4-e5f6-7890-abcd-1234567890ab",
+		"name": "MoMo Payment Service - Member A API Collection",
+		"description": "Postman Collection đầy đủ 11 kịch bản API cho Thành viên A (Khởi tạo thanh toán với Order Service và MoMo Sandbox).",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"item": [
+		{
+			"name": "1. Khởi tạo thanh toán hợp lệ (201 Created)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-ORDER-1001-TRY1"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Thanh toán vé workshop Python\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "2. Gửi lại request trùng Idempotency-Key (200 OK)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-ORDER-1001-TRY1"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Thanh toán vé workshop Python\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "3. MoMo Timeout Mô phỏng (202 Accepted - UNKNOWN)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-TIMEOUT-TEST"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-TIMEOUT-001\",\n  \"amount\": 999999,\n  \"currency\": \"VND\",\n  \"description\": \"[MOCK_TIMEOUT] Test mô phỏng timeout\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "4. Số tiền âm / bằng 0 (400 Bad Request)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-TEST-400-NEG"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-1002\",\n  \"amount\": -5000,\n  \"currency\": \"VND\",\n  \"description\": \"Số tiền âm\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "5. Tiền tệ khác VND (400 Bad Request)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-TEST-400-CURR"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-1003\",\n  \"amount\": 50000,\n  \"currency\": \"USD\",\n  \"description\": \"Currency USD\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "6. Độ dài order_id vượt quá 64 ký tự (400 Bad Request)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-TEST-400-LEN"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-AAAAAAAAAAAAAAA-BBBBBBBBBBBBBBB-CCCCCCCCCCCCCCC-DDDDDDDDDDDDDDD-EEEE\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Order id quá dài\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "7. Sai Token Nội Bộ (401 Unauthorized)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "WRONG_TOKEN"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-TEST-401"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-1004\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Test token fail\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "8. Cùng Key Nhưng Khác Body (409 Conflict)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-ORDER-1001-TRY1"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 99000,\n  \"currency\": \"VND\",\n  \"description\": \"Cùng key nhưng đổi số tiền\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "9. Đơn hàng đang có giao dịch chưa xử lý xong (409 Conflict)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-ORDER-1001-TRY2"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Khác key cho cùng đơn hàng đang active\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "10. MoMo từ chối giao dịch (502 Bad Gateway)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-REJECT-TEST"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-REJECT-001\",\n  \"amount\": 888888,\n  \"currency\": \"VND\",\n  \"description\": \"[MOCK_REJECTED] MoMo từ chối\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "11. Kiểm tra Health Check DB & Index (200 OK)",
+			"request": {
+				"method": "GET",
+				"header": [],
+				"url": {
+					"raw": "{{base_url}}/health/db",
+					"host": ["{{base_url}}"],
+					"path": ["health", "db"]
+				}
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "base_url",
+			"value": "http://localhost:8002",
+			"type": "string"
+		},
+		{
+			"key": "internal_token",
+			"value": "secret_internal_token_123",
+			"type": "string"
+		}
+	]
+}
