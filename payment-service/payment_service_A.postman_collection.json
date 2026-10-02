@@ -1,0 +1,564 @@
+{
+  "info": {
+    "_postman_id": "a1b2c3d4-e5f6-7890-abcd-1234567890ab",
+    "name": "MoMo Payment Service - Member A API Collection",
+    "description": "Postman Collection đầy đủ 11 kịch bản API cho Thành viên A (Khởi tạo thanh toán với Order Service và MoMo Sandbox).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Khởi tạo thanh toán hợp lệ (201 Created)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-ORDER-1001-TRY1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Thanh toán vé workshop Python\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "if (pm.response.code === 201 || pm.response.code === 200) {",
+              "    const body = pm.response.json();",
+              "    pm.collectionVariables.set('demo_payment_id', body.payment_id);",
+              "    console.log('payment_id:', body.payment_id);",
+              "    console.log('Set demo_provider_request_id manually from the payments table before running IPN.');",
+              "}"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. Gửi lại request trùng Idempotency-Key (200 OK)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-ORDER-1001-TRY1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Thanh toán vé workshop Python\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "3. MoMo Timeout Mô phỏng (202 Accepted - UNKNOWN)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-TIMEOUT-TEST"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-TIMEOUT-001\",\n  \"amount\": 999999,\n  \"currency\": \"VND\",\n  \"description\": \"[MOCK_TIMEOUT] Test mô phỏng timeout\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "4. Số tiền âm / bằng 0 (400 Bad Request)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-TEST-400-NEG"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-1002\",\n  \"amount\": -5000,\n  \"currency\": \"VND\",\n  \"description\": \"Số tiền âm\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "5. Tiền tệ khác VND (400 Bad Request)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-TEST-400-CURR"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-1003\",\n  \"amount\": 50000,\n  \"currency\": \"USD\",\n  \"description\": \"Currency USD\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "6. Độ dài order_id vượt quá 64 ký tự (400 Bad Request)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-TEST-400-LEN"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-AAAAAAAAAAAAAAA-BBBBBBBBBBBBBBB-CCCCCCCCCCCCCCC-DDDDDDDDDDDDDDD-EEEE\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Order id quá dài\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "7. Sai Token Nội Bộ (401 Unauthorized)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "WRONG_TOKEN"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-TEST-401"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-1004\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Test token fail\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "8. Cùng Key Nhưng Khác Body (409 Conflict)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-ORDER-1001-TRY1"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 99000,\n  \"currency\": \"VND\",\n  \"description\": \"Cùng key nhưng đổi số tiền\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "9. Đơn hàng đang có giao dịch chưa xử lý xong (409 Conflict)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-ORDER-1001-TRY2"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-1001\",\n  \"amount\": 50000,\n  \"currency\": \"VND\",\n  \"description\": \"Khác key cho cùng đơn hàng đang active\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "10. MoMo từ chối giao dịch (502 Bad Gateway)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          },
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          },
+          {
+            "key": "Idempotency-Key",
+            "value": "IDEM-REJECT-TEST"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"order_id\": \"ORD-REJECT-001\",\n  \"amount\": 888888,\n  \"currency\": \"VND\",\n  \"description\": \"[MOCK_REJECTED] MoMo từ chối\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/internal/payments",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments"
+          ]
+        }
+      }
+    },
+    {
+      "name": "11. Kiểm tra Health Check DB & Index (200 OK)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health/db",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "health",
+            "db"
+          ]
+        }
+      }
+    },
+    {
+      "name": "B1. Nhận IPN Success (HMAC)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/internal/payments/ipn",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments",
+            "ipn"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"partnerCode\": \"MOMO\",\n  \"orderId\": \"{{demo_payment_id}}\",\n  \"requestId\": \"{{demo_provider_request_id}}\",\n  \"amount\": 50000,\n  \"orderInfo\": \"Demo Member B\",\n  \"orderType\": \"momo_wallet\",\n  \"transId\": \"{{demo_trans_id}}\",\n  \"resultCode\": 0,\n  \"message\": \"Success\",\n  \"payType\": \"qr\",\n  \"responseTime\": \"{{demo_response_time}}\",\n  \"extraData\": \"\",\n  \"signature\": \"{{momo_ipn_signature}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const accessKey = pm.collectionVariables.get('momo_access_key');",
+              "const secretKey = pm.collectionVariables.get('momo_secret_key');",
+              "const amount = '50000';",
+              "const extraData = '';",
+              "const message = 'Success';",
+              "const orderId = pm.collectionVariables.get('demo_payment_id');",
+              "const orderInfo = 'Demo Member B';",
+              "const orderType = 'momo_wallet';",
+              "const partnerCode = 'MOMO';",
+              "const payType = 'qr';",
+              "const requestId = pm.collectionVariables.get('demo_provider_request_id');",
+              "const responseTime = Date.now().toString();",
+              "const resultCode = '0';",
+              "const transId = pm.collectionVariables.get('demo_trans_id');",
+              "pm.collectionVariables.set('demo_response_time', responseTime);",
+              "const raw = `accessKey=${accessKey}&amount=${amount}&extraData=${extraData}&message=${message}&orderId=${orderId}&orderInfo=${orderInfo}&orderType=${orderType}&partnerCode=${partnerCode}&payType=${payType}&requestId=${requestId}&responseTime=${responseTime}&resultCode=${resultCode}&transId=${transId}`;",
+              "const signature = CryptoJS.HmacSHA256(raw, secretKey).toString(CryptoJS.enc.Hex);",
+              "pm.collectionVariables.set('momo_ipn_signature', signature);"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "B2. Gửi lại IPN để kiểm tra duplicate",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/internal/payments/ipn",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments",
+            "ipn"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"partnerCode\": \"MOMO\",\n  \"orderId\": \"{{demo_payment_id}}\",\n  \"requestId\": \"{{demo_provider_request_id}}\",\n  \"amount\": 50000,\n  \"orderInfo\": \"Demo Member B\",\n  \"orderType\": \"momo_wallet\",\n  \"transId\": \"{{demo_trans_id}}\",\n  \"resultCode\": 0,\n  \"message\": \"Success\",\n  \"payType\": \"qr\",\n  \"responseTime\": \"{{demo_response_time}}\",\n  \"extraData\": \"\",\n  \"signature\": \"{{momo_ipn_signature}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "name": "B3. Tra cứu payment",
+      "request": {
+        "method": "GET",
+        "header": [
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/internal/payments/{{demo_payment_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments",
+            "{{demo_payment_id}}"
+          ]
+        }
+      }
+    },
+    {
+      "name": "B4. Đối soát payment",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "X-Internal-Token",
+            "value": "{{internal_token}}"
+          }
+        ],
+        "url": {
+          "raw": "{{base_url}}/internal/payments/{{demo_payment_id}}/reconcile",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "internal",
+            "payments",
+            "{{demo_payment_id}}",
+            "reconcile"
+          ]
+        }
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8002",
+      "type": "string"
+    },
+    {
+      "key": "internal_token",
+      "value": "secret_internal_token_123",
+      "type": "string"
+    },
+    {
+      "key": "momo_access_key",
+      "value": "demo_access_key",
+      "type": "string"
+    },
+    {
+      "key": "momo_secret_key",
+      "value": "demo_secret_key",
+      "type": "string"
+    },
+    {
+      "key": "demo_payment_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "demo_provider_request_id",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "demo_trans_id",
+      "value": "123456789",
+      "type": "string"
+    },
+    {
+      "key": "demo_response_time",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}
