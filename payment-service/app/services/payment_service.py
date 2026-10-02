@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import uuid
+import hmac
 from typing import Tuple
 
 from fastapi import HTTPException, status
@@ -16,7 +17,8 @@ from app.providers import (
     ProviderTimeoutError,
     get_payment_provider,
 )
-from app.schemas import PaymentCreateRequest, PaymentResponse
+from app.schemas import MoMoIPNRequest, PaymentCreateRequest, PaymentResponse
+from app.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +32,93 @@ class PaymentService:
         data_str = json.dumps(request_data.model_dump(), sort_keys=True)
         return hashlib.sha256(data_str.encode("utf-8")).hexdigest()
 
+    async def handle_ipn(self, data: MoMoIPNRequest):
+        if data.partnerCode != settings.momo_partner_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid partnerCode",
+            )
+
+        payment = (
+            self.db.query(Payment)
+            .filter(Payment.payment_id == data.orderId)
+            .first()
+        )
+
+        if not payment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment not found",
+            )
+
+        if payment.amount != data.amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid amount",
+            )
+
+        if payment.provider_request_id != data.requestId:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid requestId",
+            )
+
+        raw_signature = (
+            f"accessKey={settings.momo_access_key}"
+            f"&amount={data.amount}"
+            f"&extraData={data.extraData}"
+            f"&message={data.message}"
+            f"&orderId={data.orderId}"
+            f"&orderInfo={data.orderInfo}"
+            f"&orderType={data.orderType}"
+            f"&partnerCode={data.partnerCode}"
+            f"&payType={data.payType}"
+            f"&requestId={data.requestId}"
+            f"&responseTime={data.responseTime}"
+            f"&resultCode={data.resultCode}"
+            f"&transId={data.transId}"
+        )
+
+        expected_signature = hmac.new(
+            settings.momo_secret_key.encode("utf-8"),
+            raw_signature.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        if not hmac.compare_digest(data.signature, expected_signature):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid signature",
+            )
+
+        if payment.status in ["SUCCESS", "FAILED"]:
+            logger.info(
+                "Duplicate IPN ignored for payment_id=%s",
+                payment.payment_id,
+            )
+            return
+
+        payment.provider_transaction_id = str(data.transId)
+        payment.provider_response_code = data.resultCode
+        payment.provider_message = data.message
+
+        if data.resultCode == 0:
+            payment.status = "SUCCESS"
+        else:
+            payment.status = "FAILED"
+
+        try:
+            self.db.commit()
+        except SQLAlchemyError as exc:
+            self.db.rollback()
+            logger.exception(
+                "Failed to update payment from IPN: %s",
+                payment.payment_id,
+            )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Failed to update payment",
+            ) from exc
     async def create_payment(
         self,
         request_data: PaymentCreateRequest,

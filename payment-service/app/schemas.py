@@ -60,3 +60,18 @@ class ErrorResponse(BaseModel):
     detail: str
     payment_id: Optional[str] = None
     provider_code: Optional[int] = None
+
+class MoMoIPNRequest(BaseModel):
+    partnerCode: str
+    orderId: str
+    requestId: str
+    amount: int
+    orderInfo: str
+    orderType: str
+    transId: int
+    resultCode: int
+    message: str
+    payType: str
+    responseTime: int
+    extraData: str = ""
+    signature: str

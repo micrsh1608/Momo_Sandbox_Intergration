@@ -10,7 +10,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.config import settings
 from app.database import engine
 from app.models import Base
-from app.routes import payments_router
+from app.routes import payments_router, webhook_router
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +31,19 @@ async def lifespan(app: FastAPI):
                     )
                     BEGIN
                         ALTER TABLE payments ADD provider_transaction_id VARCHAR(64) NULL;
+                    END
+                """)
+                )
+                conn.execute(
+                    text("""
+                    IF NOT EXISTS (
+                        SELECT *
+                        FROM INFORMATION_SCHEMA.COLUMNS
+                        WHERE TABLE_NAME = 'payments'
+                        AND COLUMN_NAME = 'payment_id'
+                    )
+                    BEGIN
+                        ALTER TABLE payments ADD payment_id VARCHAR(64) NULL;
                     END
                 """)
                 )
@@ -80,9 +93,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
         },
     )
 
-
 app.include_router(payments_router)
-
+app.include_router(webhook_router)
 
 @app.get("/health", tags=["Health"])
 def health():
