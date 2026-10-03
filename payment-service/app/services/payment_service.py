@@ -51,6 +51,12 @@ class PaymentService:
                 detail="Payment not found",
             )
 
+        if payment.provider != "momo":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Payment does not belong to MoMo",
+            )
+
         if payment.amount != data.amount:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -61,6 +67,12 @@ class PaymentService:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid requestId",
+            )
+
+        if payment.description != data.orderInfo:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid orderInfo",
             )
 
         raw_signature = (

@@ -23,7 +23,8 @@ payment-service/
 │   ├── security.py                        # Middleware xác thực X-Internal-Token
 │   ├── routes/
 │   │   ├── __init__.py
-│   │   └── payments.py                    # Endpoint POST /internal/payments
+│   │   ├── payments.py                    # Internal create and status endpoints
+│   │   └── webhook.py                     # MoMo IPN callback endpoint
 │   ├── services/
 │   │   ├── __init__.py
 │   │   └── payment_service.py            # State Machine, Commit error recovery & Idempotency
@@ -34,7 +35,8 @@ payment-service/
 │       └── mock.py                        # Provider mô phỏng thử nghiệm nội bộ
 └── tests/
     ├── __init__.py
-    └── test_payments.py                   # Bộ 14 test cases tự động (Pytest)
+    ├── test_payments.py                   # Kiểm thử khởi tạo thanh toán
+    └── test_webhook.py                    # Kiểm thử xác nhận IPN
 ```
 
 ---
@@ -65,7 +67,7 @@ Hoặc từ root project:
 
 ## 3. Chạy Kiểm Thử (Tests)
 
-Bộ kiểm thử phủ 14 trường hợp bắt buộc (bao gồm test đối chiếu dữ liệu MoMo response, test commit DB thất bại sau khi gọi provider, test IPN đến sớm `SUCCESS`/`FAILED`, test race condition cấp DB, test timeout):
+Bộ kiểm thử bao gồm xác minh chữ ký và xử lý IPN, đối chiếu response MoMo, lỗi commit DB sau khi gọi provider, IPN đến sớm `SUCCESS`/`FAILED`, race condition cấp DB và timeout:
 
 ```bash
 $env:PYTHONPATH="payment-service"; pytest payment-service/tests -v
@@ -122,3 +124,18 @@ $env:PYTHONPATH="payment-service"; pytest payment-service/tests -v
 4. **Khóa DB Chống Tạo Trùng & Dừng Ứng Dụng Nếu Lỗi Index (`main.py`)**:
    - Tự động tạo `Filtered Unique Index` trên SQL Server: `CREATE UNIQUE INDEX UQ_payments_active_order ON payments(order_id) WHERE status IN ('CREATED', 'PENDING', 'UNKNOWN', 'SUCCESS');`.
    - Nếu khởi tạo DB hoặc Index thất bại lúc startup, ứng dụng sẽ **dừng khởi động hoàn toàn** (`RuntimeError`) để đảm bảo không chạy ứng dụng khi thiếu khóa DB.
+
+## 6. Xác nhận kết quả thanh toán qua MoMo IPN (Thành viên B)
+
+- Endpoint callback: `POST /api/v1/payments/ipn`. MoMo gọi endpoint này server-to-server; endpoint không yêu cầu `X-Internal-Token`.
+- Trước khi cập nhật giao dịch, service kiểm tra `partnerCode`, `orderId`, `requestId`, `amount`, `orderInfo` và chữ ký HMAC-SHA256.
+- `resultCode = 0` chuyển giao dịch sang `SUCCESS`; mã khác chuyển sang `FAILED`. Callback lặp lại không ghi đè trạng thái cuối.
+- Sau khi ghi nhận callback, service trả HTTP `204 No Content`.
+- IPN thật cần một URL HTTPS công khai trỏ tới `/api/v1/payments/ipn`. `localhost` và host mẫu trong `.env.example` không truy cập được từ MoMo; dùng HTTPS tunnel cho demo local.
+- Order Service có thể đọc kết quả qua `GET /internal/payments/{payment_id}` kèm header `X-Internal-Token`.
+
+### Chạy thử với MoMo Sandbox
+
+1. Điền thông tin test `MOMO_PARTNER_CODE`, `MOMO_ACCESS_KEY` và `MOMO_SECRET_KEY`; không commit file `.env`.
+2. Chạy service trên host/tunnel HTTPS công khai và đặt `MOMO_IPN_URL` thành URL callback ở trên.
+3. Đặt `PAYMENT_PROVIDER_MODE=momo`, tạo thanh toán qua `POST /internal/payments`, hoàn tất giao dịch bằng tài khoản MoMo test, rồi tra cứu `GET /internal/payments/{payment_id}` để xem trạng thái cuối.
