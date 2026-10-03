@@ -36,16 +36,90 @@ async def lifespan(app: FastAPI):
                 )
                 conn.execute(
                     text("""
-                    IF NOT EXISTS (
-                        SELECT *
-                        FROM INFORMATION_SCHEMA.COLUMNS
-                        WHERE TABLE_NAME = 'payments'
-                        AND COLUMN_NAME = 'payment_id'
+                    IF COL_LENGTH(N'dbo.payments', N'payment_id') IS NULL
+                    BEGIN
+                        ALTER TABLE dbo.payments ADD payment_id VARCHAR(64) NULL;
+                    END
+                    """)
+                )
+                conn.execute(
+                    text("""
+                    UPDATE dbo.payments
+                    SET payment_id = 'PAY-MIGRATED-' + CONVERT(VARCHAR(20), id)
+                    WHERE payment_id IS NULL OR LTRIM(RTRIM(payment_id)) = '';
+                    """)
+                )
+                conn.execute(
+                    text("""
+                    IF EXISTS (
+                        SELECT payment_id
+                        FROM dbo.payments
+                        GROUP BY payment_id
+                        HAVING COUNT(*) > 1
                     )
                     BEGIN
-                        ALTER TABLE payments ADD payment_id VARCHAR(64) NULL;
-                    END
-                """)
+                        ;THROW 51001, 'Duplicate payment_id values must be resolved before migration.', 1;
+                    END;
+                    IF EXISTS (
+                        SELECT 1 FROM dbo.payments WHERE payment_id IS NULL
+                    )
+                    BEGIN
+                        ;THROW 51002, 'payment_id backfill left NULL values.', 1;
+                    END;
+                    IF EXISTS (
+                        SELECT 1 FROM dbo.payments WHERE LEN(payment_id) > 64
+                    )
+                    BEGIN
+                        ;THROW 51003, 'payment_id values longer than 64 characters must be resolved.', 1;
+                    END;
+                    """)
+                )
+                conn.execute(
+                    text("""
+                    IF EXISTS (
+                        SELECT 1
+                        FROM sys.columns
+                        WHERE object_id = OBJECT_ID(N'dbo.payments')
+                          AND name = N'payment_id'
+                          AND is_nullable = 1
+                    )
+                    BEGIN
+                        ALTER TABLE dbo.payments ALTER COLUMN payment_id VARCHAR(64) NOT NULL;
+                    END;
+                    """)
+                )
+                conn.execute(
+                    text("""
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM sys.indexes i
+                        WHERE i.object_id = OBJECT_ID(N'dbo.payments')
+                          AND i.is_unique = 1
+                          AND i.is_disabled = 0
+                          AND i.has_filter = 0
+                          AND (
+                              SELECT COUNT(*)
+                              FROM sys.index_columns ic
+                              WHERE ic.object_id = i.object_id
+                                AND ic.index_id = i.index_id
+                                AND ic.key_ordinal > 0
+                          ) = 1
+                          AND EXISTS (
+                              SELECT 1
+                              FROM sys.index_columns ic
+                              JOIN sys.columns c
+                                ON c.object_id = ic.object_id
+                               AND c.column_id = ic.column_id
+                              WHERE ic.object_id = i.object_id
+                                AND ic.index_id = i.index_id
+                                AND ic.key_ordinal = 1
+                                AND c.name = N'payment_id'
+                          )
+                    )
+                    BEGIN
+                        CREATE UNIQUE INDEX UQ_payments_payment_id ON dbo.payments(payment_id);
+                    END;
+                    """)
                 )
                 # Ensure filtered unique index for active order payments
                 conn.execute(

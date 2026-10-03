@@ -70,8 +70,12 @@ Hoặc từ root project:
 Bộ kiểm thử bao gồm xác minh chữ ký và xử lý IPN, đối chiếu response MoMo, lỗi commit DB sau khi gọi provider, IPN đến sớm `SUCCESS`/`FAILED`, race condition cấp DB và timeout:
 
 ```bash
-$env:PYTHONPATH="payment-service"; pytest payment-service/tests -v
+$env:PYTHONPATH="payment-service"; .\.venv\Scripts\python.exe -m pytest payment-service/tests -v
 ```
+
+Nếu đang đứng trong thư mục `payment-service`, chạy `python -m pytest tests -v`.
+
+Unit tests dùng SQLite riêng và mô phỏng filtered unique index để không cần kết nối SQL Server cá nhân. Migration SQL Server cần được xác nhận thêm trên instance SQL Server thật.
 
 ---
 
@@ -124,15 +128,28 @@ $env:PYTHONPATH="payment-service"; pytest payment-service/tests -v
 4. **Khóa DB Chống Tạo Trùng & Dừng Ứng Dụng Nếu Lỗi Index (`main.py`)**:
    - Tự động tạo `Filtered Unique Index` trên SQL Server: `CREATE UNIQUE INDEX UQ_payments_active_order ON payments(order_id) WHERE status IN ('CREATED', 'PENDING', 'UNKNOWN', 'SUCCESS');`.
    - Nếu khởi tạo DB hoặc Index thất bại lúc startup, ứng dụng sẽ **dừng khởi động hoàn toàn** (`RuntimeError`) để đảm bảo không chạy ứng dụng khi thiếu khóa DB.
+   - Migration `payment_id` backfill các dòng cũ, dừng nếu còn giá trị trùng/không hợp lệ, sau đó đổi cột thành `NOT NULL` và bảo đảm có unique index trước khi service chạy.
 
 ## 6. Xác nhận kết quả thanh toán qua MoMo IPN (Thành viên B)
 
 - Endpoint callback: `POST /api/v1/payments/ipn`. MoMo gọi endpoint này server-to-server; endpoint không yêu cầu `X-Internal-Token`.
 - Trước khi cập nhật giao dịch, service kiểm tra `partnerCode`, `orderId`, `requestId`, `amount`, `orderInfo` và chữ ký HMAC-SHA256.
-- `resultCode = 0` chuyển giao dịch sang `SUCCESS`; mã khác chuyển sang `FAILED`. Callback lặp lại không ghi đè trạng thái cuối.
+- Với luồng `captureWallet` một bước, `resultCode = 0` hoặc `9000` chuyển giao dịch sang `SUCCESS`; mã khác chuyển sang `FAILED`. Callback lặp lại không ghi đè trạng thái cuối. IPN hợp lệ có thể xác nhận cả giao dịch đang `UNKNOWN`.
 - Sau khi ghi nhận callback, service trả HTTP `204 No Content`.
 - IPN thật cần một URL HTTPS công khai trỏ tới `/api/v1/payments/ipn`. `localhost` và host mẫu trong `.env.example` không truy cập được từ MoMo; dùng HTTPS tunnel cho demo local.
 - Order Service có thể đọc kết quả qua `GET /internal/payments/{payment_id}` kèm header `X-Internal-Token`.
+
+Lookup dùng chung một response gồm `payment_id`, `order_id`, `status`, `pay_url`, `amount`, `provider`, `provider_response_code`, `environment`, `provider_transaction_id` và `provider_message`.
+
+### Demo callback khi chưa có khóa MoMo
+
+Mock callback chỉ bật rõ ràng cho demo local:
+
+1. Đặt `PAYMENT_PROVIDER_MODE=mock`.
+2. Đặt `DEMO_IPN_ENABLED=true` và `DEMO_IPN_SECRET` là một khóa riêng dài ít nhất 32 ký tự. Không dùng khóa MoMo hoặc để secret rỗng.
+3. Chỉ gửi callback demo cho payment có `provider=mock` và `environment=mock`. Payload demo dùng `partnerCode=DEMO`, chữ ký HMAC-SHA256 theo cùng thứ tự trường IPN MoMo và `DEMO_IPN_SECRET` làm khóa ký.
+
+Ứng dụng từ chối bật demo callback khi `PAYMENT_PROVIDER_MODE=momo`. Ở chế độ MoMo, IPN chỉ cập nhật payment có `provider=momo`, `environment=sandbox` và chữ ký hợp lệ từ các khóa Sandbox.
 
 ### Chạy thử với MoMo Sandbox
 

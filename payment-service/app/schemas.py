@@ -56,6 +56,19 @@ class PaymentResponse(BaseModel):
     pay_url: Optional[str] = None
 
 
+class PaymentLookupResponse(BaseModel):
+    payment_id: str
+    order_id: str
+    status: str
+    pay_url: Optional[str] = None
+    amount: int
+    provider: str
+    provider_response_code: Optional[int] = None
+    environment: str
+    provider_transaction_id: Optional[str] = None
+    provider_message: Optional[str] = None
+
+
 class ErrorResponse(BaseModel):
     detail: str
     payment_id: Optional[str] = None

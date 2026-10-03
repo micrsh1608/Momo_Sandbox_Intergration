@@ -6,13 +6,14 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine, text
 
 PAYMENT_SERVICE_DIR = Path(__file__).resolve().parent.parent
 if str(PAYMENT_SERVICE_DIR) not in sys.path:
     sys.path.insert(0, str(PAYMENT_SERVICE_DIR))
 
 from app.config import settings
-from app.database import engine, SessionLocal
+from app.database import engine, get_db, SessionLocal
 from app.main import app
 from app.models import Base, Payment
 from app.providers.base import ProviderMalformedResponseError
@@ -30,8 +31,36 @@ HEADERS_VALID = {
 
 @pytest.fixture(autouse=True)
 def setup_db():
-    Base.metadata.create_all(bind=engine)
-    yield
+    db_path = Path(__file__).parent / f".payment-tests-{uuid.uuid4().hex}.sqlite"
+    test_engine = create_engine(
+        f"sqlite:///{db_path}",
+        connect_args={"check_same_thread": False, "timeout": 30},
+    )
+    Base.metadata.create_all(bind=test_engine)
+    # Mirror the SQL Server filtered index used by production so order-level
+    # duplicate-payment tests exercise the same uniqueness rule on SQLite.
+    with test_engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX UQ_payments_active_order "
+                "ON payments(order_id) "
+                "WHERE status IN ('CREATED', 'PENDING', 'UNKNOWN', 'SUCCESS')"
+            )
+        )
+    SessionLocal.configure(bind=test_engine)
+
+    def override_get_db():
+        with SessionLocal() as session:
+            yield session
+
+    app.dependency_overrides[get_db] = override_get_db
+    try:
+        yield
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+        SessionLocal.configure(bind=engine)
+        test_engine.dispose()
+        db_path.unlink(missing_ok=True)
 
 
 def test_case_1_valid_request():
@@ -179,8 +208,8 @@ def test_case_6_concurrent_requests_same_key():
     headers = {**HEADERS_VALID, "Idempotency-Key": idempotency_key}
 
     def make_request():
-        with TestClient(app) as local_client:
-            return local_client.post("/internal/payments", json=payload, headers=headers)
+        local_client = TestClient(app)
+        return local_client.post("/internal/payments", json=payload, headers=headers)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         f1 = executor.submit(make_request)
@@ -190,7 +219,11 @@ def test_case_6_concurrent_requests_same_key():
 
     statuses = [r1.status_code, r2.status_code]
     assert 201 in statuses
-    assert all(code in [200, 201] for code in statuses)
+    # A replay that arrives while the first request is still creating the
+    # payment is correctly accepted as 202 with the same payment_id.
+    assert all(code in [200, 201, 202] for code in statuses), [
+        (response.status_code, response.text) for response in (r1, r2)
+    ]
     p_ids = [r1.json()["payment_id"], r2.json()["payment_id"]]
     assert p_ids[0] == p_ids[1]
 
@@ -214,9 +247,9 @@ def test_case_7_concurrent_different_keys_same_order():
     key2 = f"KEY-CONCUR-2-{uuid.uuid4().hex}"
 
     def make_req(p, k):
-        with TestClient(app) as local_client:
-            h = {**HEADERS_VALID, "Idempotency-Key": k}
-            return local_client.post("/internal/payments", json=p, headers=h)
+        local_client = TestClient(app)
+        h = {**HEADERS_VALID, "Idempotency-Key": k}
+        return local_client.post("/internal/payments", json=p, headers=h)
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
         f1 = executor.submit(make_req, payload1, key1)

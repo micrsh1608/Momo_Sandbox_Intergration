@@ -32,51 +32,12 @@ class PaymentService:
         data_str = json.dumps(request_data.model_dump(), sort_keys=True)
         return hashlib.sha256(data_str.encode("utf-8")).hexdigest()
 
-    async def handle_ipn(self, data: MoMoIPNRequest):
-        if data.partnerCode != settings.momo_partner_code:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid partnerCode",
-            )
-
-        payment = (
-            self.db.query(Payment)
-            .filter(Payment.payment_id == data.orderId)
-            .first()
-        )
-
-        if not payment:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Payment not found",
-            )
-
-        if payment.provider != "momo":
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Payment does not belong to MoMo",
-            )
-
-        if payment.amount != data.amount:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid amount",
-            )
-
-        if payment.provider_request_id != data.requestId:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid requestId",
-            )
-
-        if payment.description != data.orderInfo:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid orderInfo",
-            )
-
+    @staticmethod
+    def _verify_ipn_signature(
+        data: MoMoIPNRequest, access_key: str, secret_key: str
+    ) -> bool:
         raw_signature = (
-            f"accessKey={settings.momo_access_key}"
+            f"accessKey={access_key}"
             f"&amount={data.amount}"
             f"&extraData={data.extraData}"
             f"&message={data.message}"
@@ -90,43 +51,127 @@ class PaymentService:
             f"&resultCode={data.resultCode}"
             f"&transId={data.transId}"
         )
-
         expected_signature = hmac.new(
-            settings.momo_secret_key.encode("utf-8"),
+            secret_key.encode("utf-8"),
             raw_signature.encode("utf-8"),
             hashlib.sha256,
         ).hexdigest()
+        return hmac.compare_digest(data.signature, expected_signature)
 
-        if not hmac.compare_digest(data.signature, expected_signature):
+    async def handle_ipn(self, data: MoMoIPNRequest):
+        payment = (
+            self.db.query(Payment)
+            .filter(Payment.payment_id == data.orderId)
+            .first()
+        )
+        if not payment:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Payment not found",
+            )
+
+        provider_mode = settings.payment_provider_mode.lower()
+        if payment.provider == "momo":
+            if provider_mode != "momo" or payment.environment != "sandbox":
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="MoMo IPN is not enabled for this payment environment",
+                )
+            expected_partner_code = settings.momo_partner_code
+            access_key = settings.momo_access_key
+            secret_key = settings.momo_secret_key
+        elif payment.provider == "mock":
+            if (
+                provider_mode != "mock"
+                or payment.environment != "mock"
+                or not settings.demo_ipn_enabled
+                or len(settings.demo_ipn_secret.strip()) < 32
+            ):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Demo IPN is disabled or not configured",
+                )
+            expected_partner_code = "DEMO"
+            access_key = "DEMO"
+            secret_key = settings.demo_ipn_secret
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Unsupported payment provider",
+            )
+
+        if not self._verify_ipn_signature(data, access_key, secret_key):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid signature",
             )
-
-        if payment.status in ["SUCCESS", "FAILED"]:
-            logger.info(
-                "Duplicate IPN ignored for payment_id=%s",
-                payment.payment_id,
+        if data.partnerCode != expected_partner_code:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid partnerCode",
             )
+        if payment.amount != data.amount:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid amount",
+            )
+        if payment.provider_request_id != data.requestId:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid requestId",
+            )
+        if payment.description != data.orderInfo:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid orderInfo",
+            )
+
+        if payment.status in {"SUCCESS", "FAILED"}:
+            logger.info("Duplicate IPN ignored for payment_id=%s", payment.payment_id)
             return
 
-        payment.provider_transaction_id = str(data.transId)
-        payment.provider_response_code = data.resultCode
-        payment.provider_message = data.message
-
-        if data.resultCode == 0:
-            payment.status = "SUCCESS"
-        else:
-            payment.status = "FAILED"
-
+        # captureWallet is a one-step payment flow. MoMo documents resultCode
+        # 0 as paid and 9000 as successfully authorized (which is successful
+        # for one-step payments); other codes are failures.
+        target_status = "SUCCESS" if data.resultCode in {0, 9000} else "FAILED"
         try:
+            updated_count = (
+                self.db.query(Payment)
+                .filter(
+                    Payment.payment_id == data.orderId,
+                    Payment.status.in_(["CREATED", "PENDING", "UNKNOWN"]),
+                )
+                .update(
+                    {
+                        Payment.status: target_status,
+                        Payment.provider_transaction_id: str(data.transId),
+                        Payment.provider_response_code: data.resultCode,
+                        Payment.provider_message: data.message,
+                    },
+                    synchronize_session=False,
+                )
+            )
+            if updated_count == 0:
+                self.db.rollback()
+                current = (
+                    self.db.query(Payment)
+                    .filter(Payment.payment_id == data.orderId)
+                    .first()
+                )
+                if current and current.status in {"SUCCESS", "FAILED"}:
+                    logger.info(
+                        "Concurrent duplicate IPN ignored for payment_id=%s",
+                        current.payment_id,
+                    )
+                    return
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail="Payment is not in a confirmable state",
+                )
             self.db.commit()
         except SQLAlchemyError as exc:
             self.db.rollback()
-            logger.exception(
-                "Failed to update payment from IPN: %s",
-                payment.payment_id,
-            )
+            logger.exception("Failed to update payment from IPN: %s", data.orderId)
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Failed to update payment",
@@ -220,6 +265,19 @@ class PaymentService:
             ) from exc
 
         if active_payment:
+            if active_payment.idempotency_key == idempotency_key:
+                if active_payment.request_hash != request_hash:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Cùng Idempotency-Key nhưng dữ liệu yêu cầu khác với lần trước",
+                    )
+                return status.HTTP_200_OK, PaymentResponse(
+                    payment_id=active_payment.payment_id,
+                    order_id=active_payment.order_id,
+                    status=active_payment.status,
+                    environment=active_payment.environment,
+                    pay_url=active_payment.pay_url,
+                )
             if active_payment.status == "UNKNOWN":
                 raise HTTPException(
                     status_code=status.HTTP_409_CONFLICT,
@@ -281,6 +339,51 @@ class PaymentService:
             ) from exc
         except SQLAlchemyError as exc:
             self.db.rollback()
+            # A concurrent request can win the unique-key/order race while
+            # this transaction is being committed. Re-read after rollback so
+            # an idempotent retry returns the winning payment instead of a
+            # transient database error.
+            try:
+                concurrent_payment = (
+                    self.db.query(Payment)
+                    .filter(Payment.idempotency_key == idempotency_key)
+                    .first()
+                )
+                if concurrent_payment:
+                    if concurrent_payment.request_hash != request_hash:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Cùng Idempotency-Key nhưng dữ liệu yêu cầu khác với lần trước",
+                        )
+                    return status.HTTP_200_OK, PaymentResponse(
+                        payment_id=concurrent_payment.payment_id,
+                        order_id=concurrent_payment.order_id,
+                        status=concurrent_payment.status,
+                        environment=concurrent_payment.environment,
+                        pay_url=concurrent_payment.pay_url,
+                    )
+
+                concurrent_order_payment = (
+                    self.db.query(Payment)
+                    .filter(
+                        Payment.order_id == request_data.order_id,
+                        Payment.status.in_(
+                            ["PENDING", "SUCCESS", "CREATED", "UNKNOWN"]
+                        ),
+                    )
+                    .first()
+                )
+                if concurrent_order_payment:
+                    raise HTTPException(
+                        status_code=status.HTTP_409_CONFLICT,
+                        detail="Đơn hàng đã có lần thanh toán đang hoạt động hoặc đã thành công",
+                    )
+            except HTTPException:
+                raise
+            except SQLAlchemyError:
+                self.db.rollback()
+                logger.exception("Could not recover concurrent payment insert")
+
             logger.exception("Failed to pre-save payment record to database")
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -315,6 +418,16 @@ class PaymentService:
                 if current_p and current_p.status in ["SUCCESS", "FAILED"]:
                     logger.info("IPN already set final status '%s' for payment_id=%s", current_p.status, payment_id)
                     if current_p.status == "SUCCESS":
+                        if not current_p.pay_url:
+                            self.db.query(Payment).filter(
+                                Payment.payment_id == payment_id,
+                                Payment.status == "SUCCESS",
+                                Payment.pay_url.is_(None),
+                            ).update(
+                                {Payment.pay_url: pay_url},
+                                synchronize_session=False,
+                            )
+                            self.db.commit()
                         return status.HTTP_200_OK, PaymentResponse(
                             payment_id=payment_id,
                             order_id=request_data.order_id,
@@ -328,24 +441,41 @@ class PaymentService:
                             detail=f"Giao dịch đã được ghi nhận thất bại bởi IPN. Payment ID: {payment_id}",
                         )
 
-                # Only update status if current DB status is CREATED or UNKNOWN
-                updated_count = (
-                    self.db.query(Payment)
-                    .filter(
-                        Payment.payment_id == payment_id,
-                        Payment.status.in_(["CREATED", "UNKNOWN"]),
+                # A signed IPN can arrive before the create response. Preserve
+                # its result code/transaction id while saving the returned URL.
+                if current_p and current_p.status == "PENDING":
+                    updated_count = (
+                        self.db.query(Payment)
+                        .filter(
+                            Payment.payment_id == payment_id,
+                            Payment.status == "PENDING",
+                        )
+                        .update(
+                            {
+                                Payment.pay_url: pay_url,
+                                Payment.environment: environment,
+                            },
+                            synchronize_session=False,
+                        )
                     )
-                    .update(
-                        {
-                            Payment.status: "PENDING",
-                            Payment.pay_url: pay_url,
-                            Payment.environment: environment,
-                            Payment.provider_response_code: provider_code,
-                            Payment.provider_transaction_id: trans_id,
-                        },
-                        synchronize_session=False,
+                else:
+                    updated_count = (
+                        self.db.query(Payment)
+                        .filter(
+                            Payment.payment_id == payment_id,
+                            Payment.status.in_(["CREATED", "UNKNOWN"]),
+                        )
+                        .update(
+                            {
+                                Payment.status: "PENDING",
+                                Payment.pay_url: pay_url,
+                                Payment.environment: environment,
+                                Payment.provider_response_code: provider_code,
+                                Payment.provider_transaction_id: trans_id,
+                            },
+                            synchronize_session=False,
+                        )
                     )
-                )
                 self.db.commit()
 
                 if updated_count == 0:
@@ -357,6 +487,11 @@ class PaymentService:
                             status="SUCCESS",
                             environment=environment,
                             pay_url=p_check.pay_url or pay_url,
+                        )
+                    if p_check and p_check.status == "FAILED":
+                        raise HTTPException(
+                            status_code=status.HTTP_502_BAD_GATEWAY,
+                            detail=f"Giao dịch đã được ghi nhận thất bại bởi IPN. Payment ID: {payment_id}",
                         )
 
                 return status.HTTP_201_CREATED, PaymentResponse(

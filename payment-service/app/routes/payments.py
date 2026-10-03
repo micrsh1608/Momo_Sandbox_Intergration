@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Response, status
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.schemas import PaymentCreateRequest, PaymentResponse
+from app.schemas import PaymentCreateRequest, PaymentLookupResponse, PaymentResponse
 from app.security import verify_internal_token
 from app.services.payment_service import PaymentService
 from app.models import Payment
@@ -33,6 +33,7 @@ async def create_payment(
 
 @router.get(
     "/payments/{payment_id}",
+    response_model=PaymentLookupResponse,
     summary="Tra cứu trạng thái thanh toán",
 )
 def get_payment_status(
@@ -52,13 +53,15 @@ def get_payment_status(
             detail="Payment not found",
         )
 
-    return {
-        "payment_id": payment.payment_id,
-        "order_id": payment.order_id,
-        "amount": payment.amount,
-        "status": payment.status,
-        "provider_transaction_id": payment.provider_transaction_id,
-        "provider_response_code": payment.provider_response_code,
-        "provider_message": payment.provider_message,
-        "environment": payment.environment,
-    }
+    return PaymentLookupResponse(
+        payment_id=payment.payment_id,
+        order_id=payment.order_id,
+        status=payment.status,
+        pay_url=payment.pay_url,
+        amount=payment.amount,
+        provider=payment.provider,
+        provider_response_code=payment.provider_response_code,
+        environment=payment.environment,
+        provider_transaction_id=payment.provider_transaction_id,
+        provider_message=payment.provider_message,
+    )

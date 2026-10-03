@@ -18,6 +18,8 @@ class Settings(BaseSettings):
 
     internal_token: str = "secret_internal_token_123"
     payment_provider_mode: str = "mock"  # "mock" or "momo"
+    demo_ipn_enabled: bool = False
+    demo_ipn_secret: str = ""
 
     momo_partner_code: str = "MOMO"
     momo_access_key: str = ""
@@ -35,6 +37,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def clamp_and_validate_config(self):
+        self.payment_provider_mode = self.payment_provider_mode.lower()
+        if self.payment_provider_mode not in {"mock", "momo"}:
+            raise ValueError("PAYMENT_PROVIDER_MODE phải là 'mock' hoặc 'momo'")
+
         # Enforce minimum 30.0s timeout requirement for MoMo API (Issue ⑤)
         if self.momo_request_timeout < 30.0:
             logger.warning(
@@ -44,6 +50,8 @@ class Settings(BaseSettings):
             self.momo_request_timeout = 30.0
 
         if self.payment_provider_mode.lower() == "momo":
+            if self.demo_ipn_enabled:
+                raise ValueError("DEMO_IPN_ENABLED chỉ được bật khi PAYMENT_PROVIDER_MODE=mock")
             if not self.momo_access_key or not self.momo_secret_key:
                 raise ValueError(
                     "Khi bật PAYMENT_PROVIDER_MODE=momo, MOMO_ACCESS_KEY và MOMO_SECRET_KEY không được để trống!"
@@ -52,6 +60,8 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "MOMO_REDIRECT_URL và MOMO_IPN_URL phải là URL hợp lệ (bắt đầu bằng http:// hoặc https://)"
                 )
+        if self.demo_ipn_enabled and len(self.demo_ipn_secret.strip()) < 32:
+            raise ValueError("DEMO_IPN_SECRET phải có ít nhất 32 ký tự khi DEMO_IPN_ENABLED=true")
         return self
 
 
