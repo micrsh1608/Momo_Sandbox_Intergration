@@ -1,6 +1,7 @@
 import hashlib
 import hmac
 import logging
+import re
 from typing import Any, Dict
 import httpx
 
@@ -9,13 +10,50 @@ from app.providers.base import (
     BasePaymentProvider,
     ProviderBusinessError,
     ProviderMalformedResponseError,
+    ProviderPendingError,
     ProviderTimeoutError,
 )
+from app.services.payment_status import STATUS_FAILED, classify_momo_result_code
 
 logger = logging.getLogger(__name__)
 
+HEX_SIGNATURE_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+
 
 class MomoProvider(BasePaymentProvider):
+    @staticmethod
+    def _parse_strict_int(value: Any, field_name: str) -> int:
+        """
+        Kiểm tra kiểu dữ liệu nghiêm ngặt cho trường số nguyên:
+        - Từ chối boolean (True/False) vì trong Python bool là subclass của int.
+        - Từ chối float hoặc chuỗi số thập phân (không dùng int() để âm thầm cắt phần thập phân).
+        """
+        if isinstance(value, bool):
+            raise ProviderMalformedResponseError(
+                f"Trường {field_name} trong response không được là kiểu boolean"
+            )
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            raise ProviderMalformedResponseError(
+                f"Trường {field_name} trong response không được là số thập phân ({value})"
+            )
+        if isinstance(value, str):
+            stripped = value.strip()
+            if re.fullmatch(r"-?\d+", stripped):
+                return int(stripped)
+            raise ProviderMalformedResponseError(
+                f"Trường {field_name} trong response không phải số nguyên hợp lệ ('{value}')"
+            )
+        raise ProviderMalformedResponseError(
+            f"Trường {field_name} trong response có kiểu dữ liệu không hợp lệ ({type(value).__name__})"
+        )
+
+    @staticmethod
+    def _is_valid_hex_signature(signature: Any) -> bool:
+        """Kiểm tra chữ ký đúng định dạng 64 ký tự hex ASCII trước khi gọi compare_digest."""
+        return isinstance(signature, str) and bool(HEX_SIGNATURE_PATTERN.fullmatch(signature))
+
     def generate_signature(
         self,
         partner_code: str,
@@ -30,6 +68,7 @@ class MomoProvider(BasePaymentProvider):
         request_type: str,
         extra_data: str = "",
     ) -> str:
+        """Tạo chữ ký HMAC-SHA256 cho request khởi tạo thanh toán (Create Payment Request)."""
         raw_signature = (
             f"accessKey={access_key}"
             f"&amount={amount}"
@@ -48,27 +87,41 @@ class MomoProvider(BasePaymentProvider):
             hashlib.sha256,
         ).hexdigest()
 
-    def verify_response_signature(
+    def verify_create_response_signature(
         self, response_data: Dict[str, Any], secret_key: str, access_key: str
     ) -> bool:
+        """
+        Xác minh chữ ký HMAC-SHA256 cho response khởi tạo thanh toán (Create Payment Response).
+        Tách riêng với công thức IPN; KHÔNG bao gồm extraData, orderInfo, orderType.
+        """
         received_signature = response_data.get("signature")
-        if not received_signature or not isinstance(received_signature, str) or not received_signature.strip():
+        if not self._is_valid_hex_signature(received_signature):
             return False
 
-        # Raw signature format for MoMo Create Payment response according to MoMo v2 OpenAPI spec
+        required_fields = (
+            "amount",
+            "message",
+            "orderId",
+            "partnerCode",
+            "payUrl",
+            "requestId",
+            "responseTime",
+            "resultCode",
+        )
+        for field in required_fields:
+            if field not in response_data or response_data[field] is None:
+                return False
+
         raw_signature = (
             f"accessKey={access_key}"
-            f"&amount={response_data.get('amount', '')}"
-            f"&extraData={response_data.get('extraData', '')}"
-            f"&message={response_data.get('message', '')}"
-            f"&orderId={response_data.get('orderId', '')}"
-            f"&orderInfo={response_data.get('orderInfo', '')}"
-            f"&orderType={response_data.get('orderType', '')}"
-            f"&partnerCode={response_data.get('partnerCode', '')}"
-            f"&payUrl={response_data.get('payUrl', '')}"
-            f"&requestId={response_data.get('requestId', '')}"
-            f"&responseTime={response_data.get('responseTime', '')}"
-            f"&resultCode={response_data.get('resultCode', '')}"
+            f"&amount={response_data['amount']}"
+            f"&message={response_data['message']}"
+            f"&orderId={response_data['orderId']}"
+            f"&partnerCode={response_data['partnerCode']}"
+            f"&payUrl={response_data['payUrl']}"
+            f"&requestId={response_data['requestId']}"
+            f"&responseTime={response_data['responseTime']}"
+            f"&resultCode={response_data['resultCode']}"
         )
 
         expected_signature = hmac.new(
@@ -77,7 +130,47 @@ class MomoProvider(BasePaymentProvider):
             hashlib.sha256,
         ).hexdigest()
 
-        return hmac.compare_digest(received_signature, expected_signature)
+        return hmac.compare_digest(received_signature.lower(), expected_signature.lower())
+
+    def verify_response_signature(
+        self, response_data: Dict[str, Any], secret_key: str, access_key: str
+    ) -> bool:
+        """Alias cho verify_create_response_signature."""
+        return self.verify_create_response_signature(response_data, secret_key, access_key)
+
+    def verify_ipn_signature(
+        self, ipn_data: Dict[str, Any], secret_key: str, access_key: str
+    ) -> bool:
+        """
+        Xác minh chữ ký HMAC-SHA256 cho callback IPN của MoMo (tách riêng với response create).
+        """
+        received_signature = ipn_data.get("signature")
+        if not self._is_valid_hex_signature(received_signature):
+            return False
+
+        raw_signature = (
+            f"accessKey={access_key}"
+            f"&amount={ipn_data.get('amount', '')}"
+            f"&extraData={ipn_data.get('extraData', '')}"
+            f"&message={ipn_data.get('message', '')}"
+            f"&orderId={ipn_data.get('orderId', '')}"
+            f"&orderInfo={ipn_data.get('orderInfo', '')}"
+            f"&orderType={ipn_data.get('orderType', '')}"
+            f"&partnerCode={ipn_data.get('partnerCode', '')}"
+            f"&payType={ipn_data.get('payType', '')}"
+            f"&requestId={ipn_data.get('requestId', '')}"
+            f"&responseTime={ipn_data.get('responseTime', '')}"
+            f"&resultCode={ipn_data.get('resultCode', '')}"
+            f"&transId={ipn_data.get('transId', '')}"
+        )
+
+        expected_signature = hmac.new(
+            secret_key.encode("utf-8"),
+            raw_signature.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+        return hmac.compare_digest(received_signature.lower(), expected_signature.lower())
 
     async def create_payment(
         self,
@@ -169,65 +262,77 @@ class MomoProvider(BasePaymentProvider):
                 "Response từ MoMo không phải là JSON object"
             )
 
-        # 1. Mandatory Field Checks (Mục ① Review)
+        # 1. Kiểm tra kiểu dữ liệu và đối chiếu các trường định danh bắt buộc (M3)
         res_partner_code = data.get("partnerCode")
         res_order_id = data.get("orderId")
         res_request_id = data.get("requestId")
         raw_res_amount = data.get("amount")
+        raw_result_code = data.get("resultCode")
+        raw_message = data.get("message")
 
-        if not res_partner_code or str(res_partner_code) != str(partner_code):
+        if not isinstance(res_partner_code, str) or res_partner_code != partner_code:
             raise ProviderMalformedResponseError(
-                f"Thiếu hoặc sai partnerCode trong response (nhận: '{res_partner_code}', kỳ vọng: '{partner_code}')"
+                f"Thiếu hoặc sai partnerCode trong response (nhận: {res_partner_code!r}, kỳ vọng: {partner_code!r})"
             )
 
-        if not res_order_id or str(res_order_id) != str(payment_id):
+        if not isinstance(res_order_id, str) or res_order_id != payment_id:
             raise ProviderMalformedResponseError(
-                f"Thiếu hoặc sai orderId trong response (nhận: '{res_order_id}', kỳ vọng: '{payment_id}')"
+                f"Thiếu hoặc sai orderId trong response (nhận: {res_order_id!r}, kỳ vọng: {payment_id!r})"
             )
 
-        if not res_request_id or str(res_request_id) != str(provider_request_id):
+        if not isinstance(res_request_id, str) or res_request_id != provider_request_id:
             raise ProviderMalformedResponseError(
-                f"Thiếu hoặc sai requestId trong response (nhận: '{res_request_id}', kỳ vọng: '{provider_request_id}')"
+                f"Thiếu hoặc sai requestId trong response (nhận: {res_request_id!r}, kỳ vọng: {provider_request_id!r})"
             )
 
         if raw_res_amount is None:
             raise ProviderMalformedResponseError("Response từ MoMo thiếu trường amount")
 
-        try:
-            res_amount = int(raw_res_amount)
-        except (ValueError, TypeError) as exc:
-            raise ProviderMalformedResponseError(
-                f"Trường amount trong response không phải số nguyên hợp lệ ('{raw_res_amount}')"
-            ) from exc
-
-        if res_amount != int(amount):
+        res_amount = self._parse_strict_int(raw_res_amount, "amount")
+        if res_amount != amount:
             raise ProviderMalformedResponseError(
                 f"amount trong response ({res_amount}) không khớp với số tiền yêu cầu ({amount})"
             )
 
-        result_code = data.get("resultCode")
-        message = data.get("message", "N/A")
-
-        if result_code is None:
+        if raw_result_code is None:
             raise ProviderMalformedResponseError(
                 "Response từ MoMo thiếu trường resultCode"
             )
+        result_code = self._parse_strict_int(raw_result_code, "resultCode")
+
+        if raw_message is not None and not isinstance(raw_message, str):
+            raise ProviderMalformedResponseError(
+                "Trường message trong response phải là chuỗi ký tự"
+            )
+        message = raw_message if isinstance(raw_message, str) else "N/A"
+
+        if "responseTime" in data and data["responseTime"] is not None:
+            self._parse_strict_int(data["responseTime"], "responseTime")
 
         if result_code == 0:
+            if not isinstance(raw_message, str):
+                raise ProviderMalformedResponseError(
+                    "Response thành công từ MoMo thiếu trường message hợp lệ"
+                )
+            if "responseTime" not in data or data["responseTime"] is None:
+                raise ProviderMalformedResponseError(
+                    "Response thành công từ MoMo thiếu trường responseTime"
+                )
+
             pay_url = data.get("payUrl")
             if not pay_url or not isinstance(pay_url, str) or not pay_url.startswith(("http://", "https://")):
                 raise ProviderMalformedResponseError(
                     "MoMo báo thành công nhưng thiếu payUrl hợp lệ"
                 )
 
-            # 2. Mandatory Signature Check for Successful Response (Mục ① Review)
+            # Kiểm tra định dạng chữ ký trước khi gọi compare_digest (M3 Task 4)
             res_signature = data.get("signature")
-            if not res_signature or not isinstance(res_signature, str) or not res_signature.strip():
+            if not self._is_valid_hex_signature(res_signature):
                 raise ProviderMalformedResponseError(
-                    "Response từ MoMo báo thành công nhưng thiếu chữ ký signature bắt buộc!"
+                    "Response từ MoMo thiếu hoặc sai định dạng chữ ký signature (cần 64 ký tự hex)!"
                 )
 
-            if not self.verify_response_signature(data, secret_key, access_key):
+            if not self.verify_create_response_signature(data, secret_key, access_key):
                 raise ProviderMalformedResponseError(
                     "Chữ ký HMAC-SHA256 trong response từ MoMo không hợp lệ!"
                 )
@@ -237,10 +342,18 @@ class MomoProvider(BasePaymentProvider):
                 "environment": "sandbox",
                 "provider_code": 0,
                 "provider_message": message,
-                "provider_transaction_id": str(data.get("transId", "")),
+                "provider_transaction_id": str(data.get("transId", "")) if data.get("transId") is not None else None,
             }
         else:
-            raise ProviderBusinessError(
-                f"MoMo từ chối giao dịch: {message} (code={result_code})",
-                provider_code=result_code,
-            )
+            # M4: Phân biệt mã từ chối cuối cùng (FAILED) với mã đang xử lý / chưa biết (UNKNOWN)
+            mapped_status = classify_momo_result_code(result_code, context="create")
+            if mapped_status == STATUS_FAILED:
+                raise ProviderBusinessError(
+                    f"MoMo từ chối giao dịch: {message} (code={result_code})",
+                    provider_code=result_code,
+                )
+            else:
+                raise ProviderPendingError(
+                    f"Giao dịch MoMo đang xử lý hoặc chưa xác định kết quả: {message} (code={result_code})",
+                    provider_code=result_code,
+                )

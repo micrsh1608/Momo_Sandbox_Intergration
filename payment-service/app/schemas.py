@@ -1,5 +1,24 @@
 from typing import Optional
+from fastapi import HTTPException
 from pydantic import BaseModel, Field, field_validator
+
+
+class PaymentAPIException(HTTPException):
+    """
+    Exception chuẩn hóa của Payment Service, đưa payment_id và provider_code
+    thành thuộc tính và trường JSON riêng (M5).
+    """
+
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        payment_id: Optional[str] = None,
+        provider_code: Optional[int] = None,
+    ):
+        super().__init__(status_code=status_code, detail=detail)
+        self.payment_id = payment_id
+        self.provider_code = provider_code
 
 
 class PaymentCreateRequest(BaseModel):
@@ -22,7 +41,9 @@ class PaymentCreateRequest(BaseModel):
     @classmethod
     def validate_non_empty(cls, v: str, info) -> str:
         if not v or not v.strip():
-            raise ValueError(f"Trường {info.field_name} không được để trống hoặc chỉ chứa khoảng trắng")
+            raise ValueError(
+                f"Trường {info.field_name} không được để trống hoặc chỉ chứa khoảng trắng"
+            )
         return v.strip()
 
     @field_validator("amount", mode="before")
@@ -60,3 +81,21 @@ class ErrorResponse(BaseModel):
     detail: str
     payment_id: Optional[str] = None
     provider_code: Optional[int] = None
+
+
+class MomoIPNRequest(BaseModel):
+    """Schema chuẩn thống nhất toàn nhóm cho callback IPN từ MoMo."""
+
+    partnerCode: str
+    orderId: str
+    requestId: str
+    amount: int
+    orderInfo: str = ""
+    orderType: str = ""
+    transId: int
+    resultCode: int
+    message: str
+    payType: str = ""
+    responseTime: int
+    extraData: str = ""
+    signature: str
