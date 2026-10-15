@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     demo_ipn_enabled: bool = False
     demo_ipn_secret: str = ""
 
+    order_service_callback_url: str = ""
+    order_service_callback_token: str = ""
+    order_service_request_timeout: float = 5.0
+
     momo_partner_code: str = "MOMO"
     momo_access_key: str = ""
     momo_secret_key: str = ""
@@ -60,8 +64,21 @@ class Settings(BaseSettings):
                 raise ValueError(
                     "MOMO_REDIRECT_URL và MOMO_IPN_URL phải là URL hợp lệ (bắt đầu bằng http:// hoặc https://)"
                 )
+            if not self.momo_ipn_url.lower().startswith("https://"):
+                raise ValueError(
+                    "MOMO_IPN_URL phải là URL HTTPS công khai để MoMo Sandbox gửi IPN"
+                )
         if self.demo_ipn_enabled and len(self.demo_ipn_secret.strip()) < 32:
             raise ValueError("DEMO_IPN_SECRET phải có ít nhất 32 ký tự khi DEMO_IPN_ENABLED=true")
+        if self.order_service_callback_url:
+            if not self.order_service_callback_url.startswith(("http://", "https://")):
+                raise ValueError("ORDER_SERVICE_CALLBACK_URL phải là URL HTTP(S) hợp lệ")
+            if not self.order_service_callback_token.strip():
+                raise ValueError(
+                    "ORDER_SERVICE_CALLBACK_TOKEN bắt buộc khi cấu hình callback Order Service"
+                )
+        if self.order_service_request_timeout <= 0:
+            raise ValueError("ORDER_SERVICE_REQUEST_TIMEOUT phải lớn hơn 0")
         return self
 
 

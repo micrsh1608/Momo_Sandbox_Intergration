@@ -51,3 +51,4 @@ class Payment(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+    order_service_notified_at = Column(DateTime(timezone=True), nullable=True)

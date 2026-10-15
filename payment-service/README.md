@@ -134,10 +134,16 @@ Unit tests dùng SQLite riêng và mô phỏng filtered unique index để khôn
 
 - Endpoint callback: `POST /api/v1/payments/ipn`. MoMo gọi endpoint này server-to-server; endpoint không yêu cầu `X-Internal-Token`.
 - Trước khi cập nhật giao dịch, service kiểm tra `partnerCode`, `orderId`, `requestId`, `amount`, `orderInfo` và chữ ký HMAC-SHA256.
-- Với luồng `captureWallet` một bước, `resultCode = 0` hoặc `9000` chuyển giao dịch sang `SUCCESS`; mã khác chuyển sang `FAILED`. Callback lặp lại không ghi đè trạng thái cuối. IPN hợp lệ có thể xác nhận cả giao dịch đang `UNKNOWN`.
-- Sau khi ghi nhận callback, service trả HTTP `204 No Content`.
+- Với luồng `captureWallet` một bước, `resultCode = 0` hoặc `9000` chuyển giao dịch sang `SUCCESS`; các mã từ chối cuối như `1001` chuyển sang `FAILED`. Mã đang xử lý (`1000`, `7000`, `7002`) giữ trạng thái `PENDING`; mã chưa phân loại chuyển sang `UNKNOWN` để đối soát, không bị kết luận nhầm là thất bại. Callback lặp lại không ghi đè trạng thái cuối. IPN hợp lệ có thể xác nhận cả giao dịch đang `UNKNOWN`.
+- Sau khi ghi nhận callback và giao kết quả cho Order Service (nếu đã cấu hình), service trả HTTP `204 No Content`.
 - IPN thật cần một URL HTTPS công khai trỏ tới `/api/v1/payments/ipn`. `localhost` và host mẫu trong `.env.example` không truy cập được từ MoMo; dùng HTTPS tunnel cho demo local.
 - Order Service có thể đọc kết quả qua `GET /internal/payments/{payment_id}` kèm header `X-Internal-Token`.
+
+### Đồng bộ Order Service
+
+Để đẩy trạng thái đơn hàng ngay sau khi nhận IPN hợp lệ, cấu hình `ORDER_SERVICE_CALLBACK_URL` và `ORDER_SERVICE_CALLBACK_TOKEN`. Payment Service gửi `POST` JSON tới URL này với các trường `eventId`, `eventType`, `orderId`, `paymentId`, `amount`, `currency`, `status`, `provider`, `providerTransactionId`, `resultCode` và `message`; header gồm `X-Internal-Token` và `Idempotency-Key` (cùng giá trị ổn định `payment:{paymentId}:{status}`). Order Service cần xác thực token, kiểm tra đơn hàng/số tiền, rồi xử lý `Idempotency-Key` để cập nhật mỗi kết quả đúng một lần.
+
+`SUCCESS` được gửi dưới dạng `payment.confirmed`; `FAILED` là `payment.failed`. IPN chưa cuối chưa gửi xác nhận đơn hàng. Nếu Order Service không phản hồi 2xx, endpoint IPN trả `503` để MoMo có thể thử lại. Dấu giao thành công được lưu ở `payments.order_service_notified_at`, và migration tự thêm cột này trên SQL Server hiện hữu. Khi callback chưa cấu hình, Payment Service chỉ lưu kết quả nội bộ.
 
 Lookup dùng chung một response gồm `payment_id`, `order_id`, `status`, `pay_url`, `amount`, `provider`, `provider_response_code`, `environment`, `provider_transaction_id` và `provider_message`.
 

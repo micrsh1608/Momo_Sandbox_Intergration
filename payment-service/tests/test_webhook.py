@@ -128,7 +128,15 @@ def make_ipn(
 
 @pytest.mark.parametrize(
     ("result_code", "expected_status"),
-    [(0, "SUCCESS"), (9000, "SUCCESS"), (1001, "FAILED")],
+    [
+        (0, "SUCCESS"),
+        (9000, "SUCCESS"),
+        (1001, "FAILED"),
+        (1000, "PENDING"),
+        (7000, "PENDING"),
+        (7002, "PENDING"),
+        (13, "UNKNOWN"),
+    ],
 )
 def test_ipn_updates_payment_and_returns_no_content(
     webhook_api, result_code, expected_status
@@ -202,6 +210,22 @@ def test_ipn_rejects_order_info_that_does_not_match_payment(webhook_api):
     assert response.json()["detail"] == "Invalid orderInfo"
 
 
+def test_ipn_rejects_missing_required_field_and_unknown_order(webhook_api):
+    client, test_sessions = webhook_api
+    payment = create_payment(test_sessions)
+    missing_order_id = make_ipn(payment)
+    missing_order_id.pop("orderId")
+    unknown_order = make_ipn(payment, overrides={"orderId": "PAY-DOES-NOT-EXIST"})
+
+    missing_response = client.post("/api/v1/payments/ipn", json=missing_order_id)
+    unknown_response = client.post("/api/v1/payments/ipn", json=unknown_order)
+    openapi = client.get("/openapi.json")
+
+    assert missing_response.status_code == 400
+    assert unknown_response.status_code == 404
+    assert "/api/v1/payments/ipn" in openapi.json()["paths"]
+
+
 def test_duplicate_and_late_ipn_do_not_overwrite_final_result(webhook_api):
     client, test_sessions = webhook_api
     payment = create_payment(test_sessions)
@@ -218,6 +242,152 @@ def test_duplicate_and_late_ipn_do_not_overwrite_final_result(webhook_api):
         saved = session.query(Payment).filter_by(payment_id=payment.payment_id).one()
         assert saved.status == "SUCCESS"
         assert saved.provider_transaction_id == "123456789"
+
+
+@pytest.mark.parametrize(
+    ("result_code", "expected_status", "expected_event"),
+    [(0, "SUCCESS", "payment.confirmed"), (1001, "FAILED", "payment.failed")],
+)
+def test_valid_ipn_notifies_order_service_once(
+    webhook_api, monkeypatch, result_code, expected_status, expected_event
+):
+    client, test_sessions = webhook_api
+    payment = create_payment(test_sessions)
+    monkeypatch.setattr(
+        settings,
+        "order_service_callback_url",
+        "http://order-service.test/internal/orders/payment-status",
+    )
+    monkeypatch.setattr(settings, "order_service_callback_token", "order-service-secret")
+    sent = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    class AsyncClient:
+        def __init__(self, **kwargs):
+            assert kwargs["timeout"] == settings.order_service_request_timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json, headers):
+            sent.append((url, json, headers))
+            return Response()
+
+    monkeypatch.setattr("app.services.payment_service.httpx.AsyncClient", AsyncClient)
+
+    first = client.post(
+        "/api/v1/payments/ipn", json=make_ipn(payment, result_code=result_code)
+    )
+    duplicate = client.post(
+        "/api/v1/payments/ipn", json=make_ipn(payment, result_code=result_code)
+    )
+
+    assert first.status_code == duplicate.status_code == 204
+    assert len(sent) == 1
+    callback_url, payload, headers = sent[0]
+    event_id = f"payment:{payment.payment_id}:{expected_status}"
+    assert callback_url == settings.order_service_callback_url
+    assert payload["eventId"] == event_id
+    assert payload["eventType"] == expected_event
+    assert payload["orderId"] == payment.order_id
+    assert payload["paymentId"] == payment.payment_id
+    assert payload["amount"] == payment.amount
+    assert payload["status"] == expected_status
+    assert headers["X-Internal-Token"] == "order-service-secret"
+    assert headers["Idempotency-Key"] == event_id
+    with test_sessions() as session:
+        saved = session.query(Payment).filter_by(payment_id=payment.payment_id).one()
+        assert saved.order_service_notified_at is not None
+
+
+def test_pending_ipn_does_not_confirm_order(webhook_api, monkeypatch):
+    client, test_sessions = webhook_api
+    payment = create_payment(test_sessions)
+    monkeypatch.setattr(
+        settings,
+        "order_service_callback_url",
+        "http://order-service.test/internal/orders/payment-status",
+    )
+    monkeypatch.setattr(settings, "order_service_callback_token", "order-service-secret")
+
+    async def unexpected_request(*args, **kwargs):
+        pytest.fail("A non-final IPN must not notify Order Service")
+
+    class AsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        post = unexpected_request
+
+    monkeypatch.setattr("app.services.payment_service.httpx.AsyncClient", AsyncClient)
+    response = client.post(
+        "/api/v1/payments/ipn", json=make_ipn(payment, result_code=7000)
+    )
+
+    assert response.status_code == 204
+    with test_sessions() as session:
+        saved = session.query(Payment).filter_by(payment_id=payment.payment_id).one()
+        assert saved.status == "PENDING"
+        assert saved.order_service_notified_at is None
+
+
+def test_order_service_failure_keeps_notification_retryable(webhook_api, monkeypatch):
+    client, test_sessions = webhook_api
+    payment = create_payment(test_sessions)
+    monkeypatch.setattr(
+        settings,
+        "order_service_callback_url",
+        "http://order-service.test/internal/orders/payment-status",
+    )
+    monkeypatch.setattr(settings, "order_service_callback_token", "order-service-secret")
+    calls = []
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+    class AsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def post(self, url, *, json, headers):
+            calls.append((json, headers))
+            if len(calls) == 1:
+                raise httpx.ConnectError("Order Service is unavailable")
+            return Response()
+
+    import httpx
+
+    monkeypatch.setattr("app.services.payment_service.httpx.AsyncClient", AsyncClient)
+
+    failed_delivery = client.post("/api/v1/payments/ipn", json=make_ipn(payment))
+    retried_delivery = client.post("/api/v1/payments/ipn", json=make_ipn(payment))
+
+    assert failed_delivery.status_code == 503
+    assert retried_delivery.status_code == 204
+    assert calls[0][1]["Idempotency-Key"] == calls[1][1]["Idempotency-Key"]
+    with test_sessions() as session:
+        saved = session.query(Payment).filter_by(payment_id=payment.payment_id).one()
+        assert saved.status == "SUCCESS"
+        assert saved.order_service_notified_at is not None
 
 
 def test_two_callback_sessions_cannot_overwrite_each_other(webhook_api):

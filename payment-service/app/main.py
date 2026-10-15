@@ -121,6 +121,14 @@ async def lifespan(app: FastAPI):
                     END;
                     """)
                 )
+                conn.execute(
+                    text("""
+                    IF COL_LENGTH(N'dbo.payments', N'order_service_notified_at') IS NULL
+                    BEGIN
+                        ALTER TABLE dbo.payments ADD order_service_notified_at DATETIMEOFFSET NULL;
+                    END
+                    """)
+                )
                 # Ensure filtered unique index for active order payments
                 conn.execute(
                     text("""

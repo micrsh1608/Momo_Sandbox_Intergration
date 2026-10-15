@@ -3,8 +3,10 @@ import json
 import logging
 import uuid
 import hmac
+from datetime import datetime, timezone
 from typing import Tuple
 
+import httpx
 from fastapi import HTTPException, status
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -21,6 +23,25 @@ from app.schemas import MoMoIPNRequest, PaymentCreateRequest, PaymentResponse
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+SUCCESS_RESULT_CODES = {0, 9000}
+PENDING_RESULT_CODES = {1000, 7000, 7002}
+FAILED_RESULT_CODES = {
+    98,
+    99,
+    1001,
+    1002,
+    1003,
+    1004,
+    1005,
+    1006,
+    1007,
+    1017,
+    1026,
+    4001,
+    4002,
+    4100,
+}
 
 
 class PaymentService:
@@ -126,56 +147,150 @@ class PaymentService:
                 detail="Invalid orderInfo",
             )
 
+        final_payment = None
         if payment.status in {"SUCCESS", "FAILED"}:
             logger.info("Duplicate IPN ignored for payment_id=%s", payment.payment_id)
+            final_payment = payment
+        else:
+            if data.resultCode in SUCCESS_RESULT_CODES:
+                target_status = "SUCCESS"
+            elif data.resultCode in PENDING_RESULT_CODES:
+                target_status = "PENDING"
+            elif data.resultCode in FAILED_RESULT_CODES:
+                target_status = "FAILED"
+            else:
+                # Unknown/non-final MoMo codes must be reconciled instead of
+                # being treated as proof of a declined payment.
+                target_status = "UNKNOWN"
+
+            try:
+                updated_count = (
+                    self.db.query(Payment)
+                    .filter(
+                        Payment.payment_id == data.orderId,
+                        Payment.status.in_(["CREATED", "PENDING", "UNKNOWN"]),
+                    )
+                    .update(
+                        {
+                            Payment.status: target_status,
+                            Payment.provider_transaction_id: str(data.transId),
+                            Payment.provider_response_code: data.resultCode,
+                            Payment.provider_message: data.message,
+                        },
+                        synchronize_session=False,
+                    )
+                )
+                if updated_count == 0:
+                    self.db.rollback()
+                    current = (
+                        self.db.query(Payment)
+                        .populate_existing()
+                        .filter(Payment.payment_id == data.orderId)
+                        .first()
+                    )
+                    if current and current.status in {"SUCCESS", "FAILED"}:
+                        logger.info(
+                            "Concurrent duplicate IPN ignored for payment_id=%s",
+                            current.payment_id,
+                        )
+                        final_payment = current
+                    else:
+                        raise HTTPException(
+                            status_code=status.HTTP_409_CONFLICT,
+                            detail="Payment is not in a confirmable state",
+                        )
+                else:
+                    self.db.commit()
+                    if target_status in {"SUCCESS", "FAILED"}:
+                        final_payment = (
+                            self.db.query(Payment)
+                            .populate_existing()
+                            .filter(Payment.payment_id == data.orderId)
+                            .one()
+                        )
+            except SQLAlchemyError as exc:
+                self.db.rollback()
+                logger.exception("Failed to update payment from IPN: %s", data.orderId)
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail="Failed to update payment",
+                ) from exc
+
+        if final_payment:
+            await self._notify_order_service(final_payment)
+
+    async def _notify_order_service(self, payment: Payment) -> None:
+        callback_url = settings.order_service_callback_url.strip()
+        if not callback_url or payment.order_service_notified_at:
             return
 
-        # captureWallet is a one-step payment flow. MoMo documents resultCode
-        # 0 as paid and 9000 as successfully authorized (which is successful
-        # for one-step payments); other codes are failures.
-        target_status = "SUCCESS" if data.resultCode in {0, 9000} else "FAILED"
+        event_id = f"payment:{payment.payment_id}:{payment.status}"
+        payload = {
+            "eventId": event_id,
+            "eventType": (
+                "payment.confirmed"
+                if payment.status == "SUCCESS"
+                else "payment.failed"
+            ),
+            "orderId": payment.order_id,
+            "paymentId": payment.payment_id,
+            "amount": payment.amount,
+            "currency": payment.currency,
+            "status": payment.status,
+            "provider": payment.provider,
+            "providerTransactionId": payment.provider_transaction_id,
+            "resultCode": payment.provider_response_code,
+            "message": payment.provider_message,
+        }
+        headers = {
+            "X-Internal-Token": settings.order_service_callback_token,
+            "Idempotency-Key": event_id,
+        }
+
         try:
-            updated_count = (
-                self.db.query(Payment)
-                .filter(
-                    Payment.payment_id == data.orderId,
-                    Payment.status.in_(["CREATED", "PENDING", "UNKNOWN"]),
+            async with httpx.AsyncClient(
+                timeout=settings.order_service_request_timeout
+            ) as client:
+                response = await client.post(
+                    callback_url,
+                    json=payload,
+                    headers=headers,
                 )
-                .update(
-                    {
-                        Payment.status: target_status,
-                        Payment.provider_transaction_id: str(data.transId),
-                        Payment.provider_response_code: data.resultCode,
-                        Payment.provider_message: data.message,
-                    },
-                    synchronize_session=False,
-                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "Order Service notification failed for payment_id=%s: %s",
+                payment.payment_id,
+                exc,
             )
-            if updated_count == 0:
-                self.db.rollback()
-                current = (
-                    self.db.query(Payment)
-                    .filter(Payment.payment_id == data.orderId)
-                    .first()
-                )
-                if current and current.status in {"SUCCESS", "FAILED"}:
-                    logger.info(
-                        "Concurrent duplicate IPN ignored for payment_id=%s",
-                        current.payment_id,
-                    )
-                    return
-                raise HTTPException(
-                    status_code=status.HTTP_409_CONFLICT,
-                    detail="Payment is not in a confirmable state",
-                )
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Order Service notification failed; MoMo IPN can be retried",
+            ) from exc
+
+        try:
+            self.db.query(Payment).filter(
+                Payment.payment_id == payment.payment_id,
+                Payment.status == payment.status,
+                Payment.order_service_notified_at.is_(None),
+            ).update(
+                {
+                    Payment.order_service_notified_at: datetime.now(timezone.utc),
+                },
+                synchronize_session=False,
+            )
             self.db.commit()
         except SQLAlchemyError as exc:
             self.db.rollback()
-            logger.exception("Failed to update payment from IPN: %s", data.orderId)
+            logger.exception(
+                "Could not record Order Service notification for payment_id=%s",
+                payment.payment_id,
+            )
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Failed to update payment",
+                detail="Could not record Order Service notification; MoMo IPN can be retried",
             ) from exc
+
     async def create_payment(
         self,
         request_data: PaymentCreateRequest,
