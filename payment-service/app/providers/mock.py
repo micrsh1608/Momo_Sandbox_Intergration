@@ -41,5 +41,5 @@ class MockProvider(BasePaymentProvider):
             "environment": "mock",
             "provider_code": 0,
             "provider_message": "Thành công (Mock)",
-            "provider_transaction_id": f"MOCK_TRANS_{payment_id}",
+            "provider_transaction_id": None,  # Only IPN confirms the actual transId
         }

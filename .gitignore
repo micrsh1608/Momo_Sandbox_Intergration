@@ -43,3 +43,8 @@ payment-service/.env
 # Archives
 *.zip
 *.tar.gz
+
+# SQLite local demo DB
+*.db
+*.db-shm
+*.db-wal

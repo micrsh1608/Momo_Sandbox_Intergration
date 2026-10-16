@@ -11,6 +11,8 @@ from app.config import settings
 from app.database import engine
 from app.models import Base
 from app.routes import payments_router
+from app.routes.webhooks import router as webhooks_router
+from app.routes.reconciliation import router as reconciliation_router
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,14 @@ async def lifespan(app: FastAPI):
     try:
         Base.metadata.create_all(bind=engine)
         with engine.connect() as conn:
+            if engine.dialect.name == "sqlite":
+                # SQLite demo must have the same active-order uniqueness protection as MSSQL.
+                conn.execute(text("""
+                    CREATE UNIQUE INDEX IF NOT EXISTS UQ_payments_active_order
+                    ON payments(order_id)
+                    WHERE status IN ('CREATED', 'PENDING', 'UNKNOWN', 'SUCCESS')
+                """))
+                conn.commit()
             if engine.dialect.name == "mssql":
                 # Ensure provider_transaction_id column exists
                 conn.execute(
@@ -82,6 +92,8 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 
 app.include_router(payments_router)
+app.include_router(webhooks_router)
+app.include_router(reconciliation_router)
 
 
 @app.get("/health", tags=["Health"])

@@ -1,6 +1,8 @@
 from contextlib import closing
-
+from pathlib import Path
+from sqlalchemy import text
 import pyodbc
+import sys
 
 connection_string = (
     "DRIVER={ODBC Driver 18 for SQL Server};"
@@ -33,4 +35,15 @@ try:
 except pyodbc.Error as error:
     print("KẾT NỐI THẤT BẠI")
     print(error)
+    raise SystemExit(1)
+
+sys.path.insert(0, str(Path(__file__).resolve().parent / "payment-service"))
+from app.database import engine
+
+try:
+    with engine.connect() as conn:
+        conn.execute(text("SELECT 1"))
+    print(f"DATABASE CONNECTED: {engine.dialect.name}")
+except Exception as exc:
+    print(f"DATABASE CONNECTION ERROR: {exc}")
     raise SystemExit(1)

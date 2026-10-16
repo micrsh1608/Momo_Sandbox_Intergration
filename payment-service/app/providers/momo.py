@@ -237,7 +237,7 @@ class MomoProvider(BasePaymentProvider):
                 "environment": "sandbox",
                 "provider_code": 0,
                 "provider_message": message,
-                "provider_transaction_id": str(data.get("transId", "")),
+                "provider_transaction_id": str(data["transId"]) if data.get("transId") else None,
             }
         else:
             raise ProviderBusinessError(

@@ -51,3 +51,21 @@ class Payment(Base):
         default=lambda: datetime.now(timezone.utc),
         onupdate=lambda: datetime.now(timezone.utc),
     )
+
+
+class PaymentWebhookEvent(Base):
+    """Audit trail for each *distinct, signed* MoMo IPN delivery."""
+    __tablename__ = "payment_webhook_events"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    payment_id = Column(String(64), nullable=False, index=True)
+    signature_hash = Column(String(64), nullable=False, unique=True, index=True)
+    transaction_id = Column(String(64), nullable=False)
+    result_code = Column(Integer, nullable=False)
+    outcome = Column(String(20), nullable=False)  # APPLIED / DUPLICATE / CONFLICT
+    previous_status = Column(String(20), nullable=False)
+    current_status = Column(String(20), nullable=False)
+    received_at = Column(
+        DateTime(timezone=True), nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )

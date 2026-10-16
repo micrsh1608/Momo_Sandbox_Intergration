@@ -11,12 +11,14 @@ SERVICE_DIR = Path(__file__).resolve().parent.parent
 class Settings(BaseSettings):
     app_name: str = "MoMo Payment Service"
 
+    database_url: str = ""  # Default: local SQLite; SQL Server: mssql+pyodbc URL
+
     db_server: str = "HUY-PC"
     db_name: str = "PaymentDB"
     db_driver: str = "ODBC Driver 18 for SQL Server"
     db_trust_server_certificate: bool = True
 
-    internal_token: str = "secret_internal_token_123"
+    internal_token: str = "local-demo-token-change-before-deployment"
     payment_provider_mode: str = "mock"  # "mock" or "momo"
 
     momo_partner_code: str = "MOMO"
