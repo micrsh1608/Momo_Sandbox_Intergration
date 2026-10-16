@@ -8,19 +8,26 @@ class ProviderError(Exception):
 
 
 class ProviderTimeoutError(ProviderError):
-    """Raised when the provider request times out."""
+    """Raised when the provider request times out or experiences network failure."""
     pass
 
 
 class ProviderBusinessError(ProviderError):
-    """Raised when provider returns an explicit error (e.g. resultCode != 0)."""
+    """Raised when provider returns an explicit final rejection error (maps to FAILED)."""
+    def __init__(self, message: str, provider_code: int):
+        super().__init__(message)
+        self.provider_code = provider_code
+
+
+class ProviderPendingError(ProviderError):
+    """Raised when provider returns a processing/pending or unknown status code (maps to UNKNOWN)."""
     def __init__(self, message: str, provider_code: int):
         super().__init__(message)
         self.provider_code = provider_code
 
 
 class ProviderMalformedResponseError(ProviderError):
-    """Raised when provider response format is invalid."""
+    """Raised when provider response format, field types, or signature is invalid (maps to UNKNOWN)."""
     pass
 
 

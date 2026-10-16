@@ -1,6 +1,6 @@
 # MoMo Payment Service - Component A (Payment Initialization)
 
-Dịch vụ Payment Service (Phần Thành viên A) phụ trách luồng khởi tạo thanh toán cho hệ thống bán vé workshop, kết nối giữa **Order Service** (Thành viên C), **Payment Service Database** (SQL Server `HUY-PC / PaymentDB`) và **MoMo Sandbox API** / **Mock Provider**.
+Dịch vụ Payment Service (Phần Thành viên A) phụ trách luồng khởi tạo thanh toán cho hệ thống bán vé workshop, kết nối giữa **Order Service** (Thành viên C), **Payment Service Database** (SQL Server `HUY-PC / PaymentDB`) và **MoMo Sandbox API** / **Mock Provider**, đồng thời phối hợp trạng thái với luồng **IPN Callback & Reconcile** (Thành viên B).
 
 ---
 
@@ -8,79 +8,92 @@ Dịch vụ Payment Service (Phần Thành viên A) phụ trách luồng khởi 
 
 ```text
 payment-service/
-├── .env                                   # Cấu hình môi trường (MOMO_REQUEST_TIMEOUT=30.0)
-├── .env.example                           # Cấu hình mẫu không chứa khóa thật
-├── requirements.txt                       # Thư viện với phiên bản cố định (fastapi==0.142.1,...)
-├── README.md                              # Tài liệu hướng dẫn chi tiết
-├── payment_service_A.postman_collection.json # Collection 11 Postman request mẫu cho C
+├── .env                                      # Cấu hình môi trường (MOMO_REQUEST_TIMEOUT=30.0)
+├── .env.example                              # Cấu hình mẫu không chứa khóa thật
+├── requirements.txt                          # Thư viện với phiên bản cố định (fastapi==0.142.1,...)
+├── README.md                                 # Tài liệu hướng dẫn chi tiết & API Contract
+├── payment_service_A.postman_collection.json # Collection 12 Postman request mẫu cho Thành viên C
 ├── app/
 │   ├── __init__.py
-│   ├── main.py                            # FastAPI app, fatal startup on DB/Index error, health check
-│   ├── config.py                          # Config validation & Timeout clamping (minimum 30.0s)
-│   ├── database.py                        # Kết nối SQLAlchemy Engine và Session (pyodbc)
-│   ├── models.py                          # SQLAlchemy Model bảng payments + Check Constraints
-│   ├── schemas.py                         # Request / Response schemas & Strict Validation
-│   ├── security.py                        # Middleware xác thực X-Internal-Token
+│   ├── main.py                               # FastAPI app, PaymentAPIException handler, fatal startup on DB/Index error
+│   ├── config.py                             # Config validation & Timeout clamping (minimum 30.0s)
+│   ├── database.py                           # Kết nối SQLAlchemy Engine và Session (pyodbc)
+│   ├── models.py                             # SQLAlchemy Model bảng payments + Check Constraints
+│   ├── schemas.py                            # Request/Response schemas, ErrorResponse, MomoIPNRequest
+│   ├── security.py                           # Middleware xác thực X-Internal-Token
 │   ├── routes/
 │   │   ├── __init__.py
-│   │   └── payments.py                    # Endpoint POST /internal/payments
+│   │   └── payments.py                       # Endpoint POST /internal/payments
 │   ├── services/
 │   │   ├── __init__.py
-│   │   └── payment_service.py            # State Machine, Commit error recovery & Idempotency
+│   │   ├── payment_status.py                 # Quy ước trạng thái dùng chung & phân loại mã resultCode MoMo
+│   │   └── payment_service.py                # State Machine, Idempotency thống nhất, Reload DB chống ghi đè IPN
 │   └── providers/
-│       ├── __init__.py                    # Provider Factory
-│       ├── base.py                        # Interface & Exception types
-│       ├── momo.py                        # Strict validation: partnerCode, orderId, requestId, amount, payUrl & HMAC-SHA256 signature
-│       └── mock.py                        # Provider mô phỏng thử nghiệm nội bộ
+│       ├── __init__.py                       # Provider Factory
+│       ├── base.py                           # Interface & Exception types (Timeout, Business, Pending, Malformed)
+│       ├── momo.py                           # Strict field/type validation & tách riêng chữ ký Create Response vs IPN
+│       └── mock.py                           # Provider mô phỏng thử nghiệm nội bộ
 └── tests/
     ├── __init__.py
-    └── test_payments.py                   # Bộ 14 test cases tự động (Pytest)
+    └── test_payments.py                      # Bộ 16 test cases tự động chạy trên DB riêng (PaymentDB_Test)
 ```
 
 ---
 
-## 2. Hướng dẫn Đặt & Chạy Ứng dụng
+## 2. Quy Ước Dùng Chung Cả Nhóm (A, B, C)
 
-### 2.1 Môi trường yêu cầu
+| Hạng mục | Quy ước thống nhất |
+|---|---|
+| **API tạo thanh toán (A -> C)** | `POST /internal/payments` |
+| **API truy vấn thanh toán (B -> C)** | `GET /internal/payments/{payment_id}` |
+| **API đối soát chủ động (B)** | `POST /internal/payments/{payment_id}/reconcile` |
+| **API nhận callback MoMo (B)** | `POST /api/v1/payments/ipn` (trả về `204 No Content`) |
+| **Schema dữ liệu callback** | `MomoIPNRequest` (`app/schemas.py`) |
+| **Hàm xử lý nghiệp vụ callback** | `PaymentService.handle_ipn()` (`app/services/payment_service.py`) |
+| **Trạng thái chưa kết thúc** | `CREATED`, `PENDING`, `UNKNOWN` |
+| **Trạng thái kết thúc (Terminal)** | `SUCCESS`, `FAILED` (không bao giờ bị ghi đè bởi kết quả đến muộn) |
+
+---
+
+## 3. Hướng dẫn Cài đặt & Chạy Ứng dụng
+
+### 3.1 Môi trường yêu cầu
 - Python >= 3.10
 - SQL Server (Instance `HUY-PC`, Database `PaymentDB`)
 - Driver: `ODBC Driver 18 for SQL Server`
 
-### 2.2 Cài đặt thư viện (Phiên bản cố định)
-```bash
-pip install -r requirements.txt
+### 3.2 Cài đặt thư viện (Phiên bản cố định)
+```powershell
+.\.venv\Scripts\python.exe -m pip install -r payment-service/requirements.txt
 ```
 
-### 2.3 Khởi chạy Service (Cổng 8002)
-Chạy dịch vụ bằng Uvicorn trên cổng **8002**:
-```bash
-uvicorn app.main:app --host 0.0.0.0 --port 8002 --reload
-```
-Hoặc từ root project:
-```bash
+### 3.3 Khởi chạy Service (Cổng 8002)
+```powershell
 .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir payment-service --port 8002 --reload
 ```
 
 ---
 
-## 3. Chạy Kiểm Thử (Tests)
+## 4. Chạy Kiểm Thử Tự Động (Tests)
 
-Bộ kiểm thử phủ 14 trường hợp bắt buộc (bao gồm test đối chiếu dữ liệu MoMo response, test commit DB thất bại sau khi gọi provider, test IPN đến sớm `SUCCESS`/`FAILED`, test race condition cấp DB, test timeout):
+Bộ kiểm thử gồm **17 hàm test với 76 kịch bản kiểm thử (Unit Tests & Integration Tests)**:
+- **Unit Tests** (chữ ký MoMo, kiểm tra kiểu dữ liệu, bảng phân loại `resultCode`) chạy hoàn toàn độc lập, **không cần kết nối SQL Server**.
+- **Integration Tests** chỉ khởi tạo lười (lazy-init) thông qua fixture `db_test_env` trên database kiểm thử riêng **`PaymentDB_Test`** (tự động khởi tạo trên SQL Server `HUY-PC`, tuyệt đối không ghi dữ liệu vào `PaymentDB` dùng hàng ngày):
 
-```bash
-$env:PYTHONPATH="payment-service"; pytest payment-service/tests -v
+```powershell
+$env:PYTHONPATH="payment-service"; .\.venv\Scripts\python.exe -m pytest payment-service/tests/test_payments.py -v
 ```
 
 ---
 
-## 4. Hợp đồng API (API Contract với Thành viên C)
+## 5. Hợp đồng API (API Contract với Thành viên C)
 
 ### **Endpoint**: `POST /internal/payments`
 
 #### Headers yêu cầu:
 - `Content-Type`: `application/json`
 - `X-Internal-Token`: `<token_noi_bo>` (mặc định: `secret_internal_token_123`)
-- `Idempotency-Key`: `<dinh_danh_duy_nhat_moi_lan_goi>` (chuỗi UUID hoặc key đơn, tối đa 128 ký tự)
+- `Idempotency-Key`: `<dinh_danh_duy_nhat_moi_lan_goi>` (tối đa 128 ký tự)
 
 #### Request Body mẫu:
 ```json
@@ -92,33 +105,35 @@ $env:PYTHONPATH="payment-service"; pytest payment-service/tests -v
 }
 ```
 
-#### Bảng Phản Hồi (HTTP Status Codes):
-| HTTP Status | Trường hợp | Response Body Mẫu |
+#### Cấu trúc JSON khi thành công (`200`, `201`, `202`):
+```json
+{
+  "payment_id": "PAY-A1B2C3D4E5F6",
+  "order_id": "ORD-1001",
+  "status": "PENDING",
+  "environment": "sandbox",
+  "pay_url": "https://test-payment.momo.vn/v2/gateway/pay?t=..."
+}
+```
+
+#### Cấu trúc JSON khi lỗi (`4xx`, `5xx`) - Tách riêng các trường ở cấp cao nhất:
+```json
+{
+  "detail": "MoMo từ chối khởi tạo giao dịch: ... (payment_id=PAY-A1B2C3D4E5F6)",
+  "payment_id": "PAY-A1B2C3D4E5F6",
+  "provider_code": 1006
+}
+```
+
+#### Bảng Mã Phản Hồi HTTP (HTTP Status Codes):
+| HTTP Status | Trường hợp | Ý nghĩa & Hành động cho Order Service (C) |
 |---|---|---|
-| **201 Created** | Khởi tạo mới thành công | `{"payment_id": "PAY-xxx", "order_id": "ORD-1001", "status": "PENDING", "environment": "sandbox", "pay_url": "https://..."}` |
-| **200 OK** | Gửi trùng Idempotency-Key & cùng nội dung | Trả về kết quả khởi tạo trước đó (cùng `payment_id`, `pay_url`) |
-| **202 Accepted** | Replay request khi `CREATED` / Timeout / Lỗi phản hồi | `{"payment_id": "PAY-xxx", "order_id": "ORD-1001", "status": "UNKNOWN", "environment": "sandbox", "pay_url": null}` |
-| **400 Bad Request** | Số tiền sai / Thiếu trường / Vượt quá độ dài | `{"detail": "Dữ liệu yêu cầu không hợp lệ: amount -> Số tiền phải là số nguyên dương"}` |
-| **401 Unauthorized** | Thiếu hoặc sai `X-Internal-Token` | `{"detail": "X-Internal-Token không hợp lệ hoặc bị thiếu"}` |
-| **409 Conflict** | Trùng key nhưng khác body, hoặc đơn hàng đang có giao dịch `PENDING`/`UNKNOWN`/`SUCCESS` | `{"detail": "Cùng Idempotency-Key nhưng dữ liệu yêu cầu khác với lần trước"}` |
-| **502 Bad Gateway** | MoMo từ chối / Response sai cấu trúc / Commit DB thất bại | `{"detail": "MoMo từ chối khởi tạo giao dịch: ... Payment ID: PAY-xxx"}` |
-| **503 Service Unavailable** | Database lỗi / chưa sẵn sàng / Thiếu Index | `{"detail": "Dịch vụ lưu trữ chưa sẵn sàng"}` |
+| **201 Created** | Khởi tạo thanh toán mới thành công | Trạng thái `PENDING`, chuyển hướng người dùng tới `pay_url` |
+| **200 OK** | Gửi lại cùng `Idempotency-Key` & cùng body khi giao dịch đã `PENDING` hoặc `SUCCESS` | Nhận lại cùng `payment_id`, `status` và `pay_url` mà không gọi lại MoMo |
+| **202 Accepted** | Timeout mạng / MoMo trả mã trùng hoặc xung đột đang xử lý (`40`, `41`, `43`), mã đang xử lý (`10`, `1000`, `7000`, `7002`, `9000`), mã hoàn tiền (`1080`, `1081`), mã lạ / Replay khi giao dịch đang `CREATED` hoặc `UNKNOWN` | Giao dịch ở trạng thái `CREATED` hoặc `UNKNOWN` (`pay_url: null`), chờ IPN hoặc đối soát (Reconcile), **không** tạo giao dịch mới trùng đơn hàng |
+| **400 Bad Request** | Số tiền `<= 0`, số thập phân, boolean, sai tiền tệ, vượt độ dài | Kiểm tra lại dữ liệu đầu vào |
+| **401 Unauthorized** | Thiếu hoặc sai `X-Internal-Token` | Kiểm tra cấu hình token nội bộ |
+| **409 Conflict** | Cùng `Idempotency-Key` nhưng khác body, hoặc `order_id` đang có giao dịch active (`CREATED`, `PENDING`, `UNKNOWN`, `SUCCESS`) | Không tạo giao dịch trùng |
+| **502 Bad Gateway** | MoMo trả mã từ chối cuối cùng (`FAILED`, gồm cả `98`, `99`, `1001`–`1007`, ...) hoặc trả response sai cấu trúc/sai chữ ký (`UNKNOWN`) | Đọc trường `payment_id` và `provider_code` ở JSON để xử lý hoặc đối soát |
+| **503 Service Unavailable** | Database lỗi kết nối, lỗi `IntegrityError` không thuộc key/active order, lỗi `commit()` trước/sau khi gọi provider, hoặc Index `UQ_payments_active_order` bị disable/sai cấu trúc | Có trường `payment_id` (nếu đã sinh) để đối soát; tuyệt đối không trả kết quả thành công giả |
 
----
-
-## 5. Các Điểm Kỹ Thuật Đã Được Tối Ưu Triệt Đệ
-
-1. **Xác minh Response MoMo Nghiêm Ngặt (`momo.py`)**:
-   - Bắt buộc đầy đủ các trường `partnerCode`, `orderId`, `requestId`, `amount` (parse kiểu số nguyên an toàn) và `payUrl` hợp lệ.
-   - Bắt buộc kiểm tra chữ ký `signature` HMAC-SHA256 của MoMo theo đúng công thức tài liệu MoMo v2 OpenAPI.
-
-2. **Xử lý Commit DB Thất Bại Sau Khi Gọi Provider (`payment_service.py`)**:
-   - Nếu `db.commit()` thất bại sau khi provider trả về thành công, hệ thống thực hiện `db.rollback()` và ném ra lỗi **`502 Bad Gateway`** kèm `payment_id` để đối soát, **không bao giờ** giả lập trả `201 PENDING` khi chưa lưu được vào DB.
-
-3. **Chuyển Trạng Thái Theo Quy Ước & Bảo Vệ Trạng Thái Cuối (State Machine Rules)**:
-   - Chỉ cho phép chuyển từ `CREATED` / `UNKNOWN` -> `PENDING`.
-   - Nếu IPN của Thành viên B đã ghi nhận `SUCCESS` hoặc `FAILED` trước đó, luồng của A sẽ giữ nguyên kết quả thực tế của IPN và trả về `200 SUCCESS` / `502 FAILED` phù hợp, không ghi đè thành `PENDING`.
-
-4. **Khóa DB Chống Tạo Trùng & Dừng Ứng Dụng Nếu Lỗi Index (`main.py`)**:
-   - Tự động tạo `Filtered Unique Index` trên SQL Server: `CREATE UNIQUE INDEX UQ_payments_active_order ON payments(order_id) WHERE status IN ('CREATED', 'PENDING', 'UNKNOWN', 'SUCCESS');`.
-   - Nếu khởi tạo DB hoặc Index thất bại lúc startup, ứng dụng sẽ **dừng khởi động hoàn toàn** (`RuntimeError`) để đảm bảo không chạy ứng dụng khi thiếu khóa DB.

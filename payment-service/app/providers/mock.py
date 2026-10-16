@@ -3,6 +3,7 @@ from app.providers.base import (
     BasePaymentProvider,
     ProviderBusinessError,
     ProviderMalformedResponseError,
+    ProviderPendingError,
     ProviderTimeoutError,
 )
 
@@ -28,7 +29,13 @@ class MockProvider(BasePaymentProvider):
         if "[MOCK_REJECTED]" in description or amount == 888888:
             raise ProviderBusinessError(
                 "Mô phỏng MoMo từ chối khởi tạo giao dịch",
-                provider_code=99,
+                provider_code=1006,
+            )
+
+        if "[MOCK_PROCESSING]" in description or amount == 666666:
+            raise ProviderPendingError(
+                "Mô phỏng MoMo đang xử lý giao dịch (mã 7000)",
+                provider_code=7000,
             )
 
         if "[MOCK_MALFORMED]" in description or amount == 777777:

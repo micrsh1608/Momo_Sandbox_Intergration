@@ -4,6 +4,7 @@ from app.providers.base import (
     ProviderBusinessError,
     ProviderError,
     ProviderMalformedResponseError,
+    ProviderPendingError,
     ProviderTimeoutError,
 )
 from app.providers.mock import MockProvider
@@ -28,5 +29,6 @@ __all__ = [
     "ProviderError",
     "ProviderTimeoutError",
     "ProviderBusinessError",
+    "ProviderPendingError",
     "ProviderMalformedResponseError",
 ]

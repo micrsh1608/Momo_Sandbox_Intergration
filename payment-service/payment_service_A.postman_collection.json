@@ -2,12 +2,12 @@
 	"info": {
 		"_postman_id": "a1b2c3d4-e5f6-7890-abcd-1234567890ab",
 		"name": "MoMo Payment Service - Member A API Collection",
-		"description": "Postman Collection đầy đủ 11 kịch bản API cho Thành viên A (Khởi tạo thanh toán với Order Service và MoMo Sandbox).",
+		"description": "Postman Collection đầy đủ 12 kịch bản API cho Thành viên A (Khởi tạo thanh toán với Order Service và MoMo Sandbox, bao gồm xử lý trạng thái đang xử lý 202 UNKNOWN và cấu trúc lỗi JSON tách riêng payment_id, provider_code).",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
 	},
 	"item": [
 		{
-			"name": "1. Khởi tạo thanh toán hợp lệ (201 Created)",
+			"name": "1. Khởi tạo thanh toán hợp lệ (201 Created - PENDING)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -94,7 +94,36 @@
 			}
 		},
 		{
-			"name": "4. Số tiền âm / bằng 0 (400 Bad Request)",
+			"name": "4. MoMo trả mã đang xử lý 7000 (202 Accepted - UNKNOWN)",
+			"request": {
+				"method": "POST",
+				"header": [
+					{
+						"key": "Content-Type",
+						"value": "application/json"
+					},
+					{
+						"key": "X-Internal-Token",
+						"value": "{{internal_token}}"
+					},
+					{
+						"key": "Idempotency-Key",
+						"value": "IDEM-PROCESSING-TEST"
+					}
+				],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n  \"order_id\": \"ORD-PROCESSING-001\",\n  \"amount\": 666666,\n  \"currency\": \"VND\",\n  \"description\": \"[MOCK_PROCESSING] Giao dịch đang được MoMo xử lý\"\n}"
+				},
+				"url": {
+					"raw": "{{base_url}}/internal/payments",
+					"host": ["{{base_url}}"],
+					"path": ["internal", "payments"]
+				}
+			}
+		},
+		{
+			"name": "5. Số tiền âm / bằng 0 (400 Bad Request)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -123,7 +152,7 @@
 			}
 		},
 		{
-			"name": "5. Tiền tệ khác VND (400 Bad Request)",
+			"name": "6. Tiền tệ khác VND (400 Bad Request)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -152,7 +181,7 @@
 			}
 		},
 		{
-			"name": "6. Độ dài order_id vượt quá 64 ký tự (400 Bad Request)",
+			"name": "7. Độ dài order_id vượt quá 64 ký tự (400 Bad Request)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -181,7 +210,7 @@
 			}
 		},
 		{
-			"name": "7. Sai Token Nội Bộ (401 Unauthorized)",
+			"name": "8. Sai Token Nội Bộ (401 Unauthorized)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -210,7 +239,7 @@
 			}
 		},
 		{
-			"name": "8. Cùng Key Nhưng Khác Body (409 Conflict)",
+			"name": "9. Cùng Key Nhưng Khác Body (409 Conflict)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -239,7 +268,7 @@
 			}
 		},
 		{
-			"name": "9. Đơn hàng đang có giao dịch chưa xử lý xong (409 Conflict)",
+			"name": "10. Đơn hàng đang có giao dịch chưa xử lý xong (409 Conflict)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -268,7 +297,7 @@
 			}
 		},
 		{
-			"name": "10. MoMo từ chối giao dịch (502 Bad Gateway)",
+			"name": "11. MoMo từ chối giao dịch cuối cùng (502 Bad Gateway - trả payment_id & provider_code)",
 			"request": {
 				"method": "POST",
 				"header": [
@@ -297,7 +326,7 @@
 			}
 		},
 		{
-			"name": "11. Kiểm tra Health Check DB & Index (200 OK)",
+			"name": "12. Kiểm tra Health Check DB & Index (200 OK)",
 			"request": {
 				"method": "GET",
 				"header": [],
